@@ -1,0 +1,18 @@
+# MarkScan OMR - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core Dependencies
+opencv-python==4.8.1.78
+numpy==1.24.3
+pandas==2.0.3
+
+# GUI Framework
+PyQt5==5.15.9
+
+# OCR and Barcode
+pytesseract==0.3.10
+pdf2image==1.16.3
+pyzbar==0.1.9
+
+# Excel Export
+openpyxl==3.1.2
