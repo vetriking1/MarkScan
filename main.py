@@ -22,6 +22,7 @@ from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -50,10 +52,11 @@ from pyzbar.pyzbar import decode
 class OMRProcessor:
     """Core logic for OMR processing - independent of PyQt5"""
 
-    def __init__(self, template_data, debug_mode=False):
+    def __init__(self, template_data, debug_mode=False, ocr_enabled=True):
         self.template = template_data
         self.debug_mode = debug_mode
         self.debug_images = []
+        self.ocr_enabled = ocr_enabled
 
     def detect_barcode(self, image):
         """Detect and decode barcode from image"""
@@ -203,6 +206,83 @@ class OMRProcessor:
         except Exception as e:
             if self.debug_mode:
                 print(f"OCR extraction error: {str(e)}")
+            return None
+
+    def extract_ocr_field(self, image, ocr_field_data):
+        """Extract text from a specific region using OCR and apply regex"""
+        try:
+            region = ocr_field_data["region"]
+            pattern = ocr_field_data["pattern"]
+            
+            # Extract region from image
+            x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+            region_img = image[y:y+h, x:x+w]
+            
+            if self.debug_mode:
+                print(f"Extracting OCR from region: x={x}, y={y}, w={w}, h={h}")
+            
+            # Preprocess the region for OCR
+            if len(region_img.shape) == 3:
+                gray = cv2.cvtColor(region_img, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = region_img
+            
+            # Resize for better OCR accuracy
+            scale_factor = 2
+            resized = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor, 
+                               interpolation=cv2.INTER_CUBIC)
+            
+            # Bilateral filter to reduce noise
+            filtered = cv2.bilateralFilter(resized, 9, 75, 75)
+            
+            # Multiple thresholding approaches
+            _, thresh1 = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Invert if background is dark
+            if np.mean(thresh1) < 127:
+                thresh1 = cv2.bitwise_not(thresh1)
+            
+            # Morphological operations
+            kernel = np.ones((2, 2), np.uint8)
+            morph = cv2.morphologyEx(thresh1, cv2.MORPH_CLOSE, kernel)
+            
+            # Try OCR with multiple PSM modes
+            psm_modes = [6, 7, 11, 12, 13]
+            all_text = []
+            
+            for psm in psm_modes:
+                text = pytesseract.image_to_string(
+                    morph, 
+                    config=f'--psm {psm}'
+                )
+                all_text.append(text)
+            
+            # Combine results
+            combined_text = '\n'.join(all_text)
+            
+            if self.debug_mode:
+                print(f"OCR text from {ocr_field_data.get('name', 'field')}: {combined_text[:200]}")
+            
+            # Apply regex pattern
+            matches = re.findall(pattern, combined_text)
+            
+            if matches:
+                # Return the first match
+                result = matches[0]
+                if isinstance(result, tuple):
+                    result = result[0] if result else ""
+                result = str(result).strip()
+                
+                if self.debug_mode:
+                    print(f"OCR matched with pattern '{pattern}': {result}")
+                return result
+            
+            if self.debug_mode:
+                print(f"No match found for pattern: {pattern}")
+            return None
+        except Exception as e:
+            if self.debug_mode:
+                print(f"OCR field extraction error: {str(e)}")
             return None
 
     def preprocess_image(self, image):
@@ -466,11 +546,18 @@ class OMRProcessor:
         # Detect barcode
         barcode_number = self.detect_barcode(image)
 
-        # Extract code using OCR (letter + 6 digits)
-        ocr_code = self.extract_code_with_ocr(image)
-
-        # Extract all fields
-        results = {"barcode_number": barcode_number, "ocr_code": ocr_code}
+        results = {}
+        
+        # Add OCR fields if enabled
+        if self.ocr_enabled and "ocr_fields" in self.template:
+            for ocr_field_name, ocr_field_data in self.template["ocr_fields"].items():
+                extracted_value = self.extract_ocr_field(image, ocr_field_data)
+                results[ocr_field_name] = extracted_value
+        
+        # Add barcode to results
+        results["barcode_number"] = barcode_number
+        
+        # Extract all OMR fields
         for field_name, field_data in self.template["fields"].items():
             value = self.extract_field_value(otsu, adaptive, gray, field_data)
             results[field_name] = value
@@ -828,6 +915,7 @@ class SheetProcessor(QWidget):
         self.processor = None
         self.results = []
         self.debug_mode = False
+        self.ocr_enabled = True
         self.init_ui()
 
     def init_ui(self):
@@ -855,6 +943,16 @@ class SheetProcessor(QWidget):
         self.debug_checkbox.stateChanged.connect(self.toggle_debug)
         controls.addWidget(self.debug_checkbox)
 
+        # OCR enable checkbox
+        self.ocr_checkbox = QCheckBox("Enable OCR")
+        self.ocr_checkbox.setChecked(True)
+        self.ocr_checkbox.stateChanged.connect(self.toggle_ocr)
+        controls.addWidget(self.ocr_checkbox)
+
+        load_ocr_btn = QPushButton("Load OCR Fields")
+        load_ocr_btn.clicked.connect(self.load_ocr_fields)
+        controls.addWidget(load_ocr_btn)
+
         export_btn = QPushButton("Export to Excel")
         export_btn.clicked.connect(self.export_excel)
         controls.addWidget(export_btn)
@@ -876,6 +974,11 @@ class SheetProcessor(QWidget):
         if self.processor:
             self.processor.debug_mode = self.debug_mode
 
+    def toggle_ocr(self, state):
+        self.ocr_enabled = state == Qt.Checked
+        if self.processor:
+            self.processor.ocr_enabled = self.ocr_enabled
+
     def load_template(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Template", "", "JSON Files (*.json)"
@@ -884,12 +987,38 @@ class SheetProcessor(QWidget):
             try:
                 with open(file_path, "r") as f:
                     template_data = json.load(f)
-                self.processor = OMRProcessor(template_data, debug_mode=self.debug_mode)
+                self.processor = OMRProcessor(
+                    template_data, 
+                    debug_mode=self.debug_mode,
+                    ocr_enabled=self.ocr_enabled
+                )
                 self.template_path = file_path
                 self.status_label.setText(f"Template loaded: {Path(file_path).name}")
             except Exception as e:
                 QMessageBox.critical(
                     self, "Error", f"Failed to load template: {str(e)}"
+                )
+
+    def load_ocr_fields(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load OCR Fields", "", "JSON Files (*.json)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "r") as f:
+                    ocr_data = json.load(f)
+                
+                if self.processor:
+                    self.processor.template["ocr_fields"] = ocr_data.get("ocr_fields", {})
+                    self.status_label.setText("OCR fields loaded successfully!")
+                else:
+                    QMessageBox.warning(
+                        self, "Warning", 
+                        "Load a template first before loading OCR fields!"
+                    )
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error", f"Failed to load OCR fields: {str(e)}"
                 )
 
     def process_pdf(self):
@@ -1008,6 +1137,308 @@ class SheetProcessor(QWidget):
 
 
 # ============================================================================
+# OCR CONFIGURATION GUI
+# ============================================================================
+
+
+class OCRConfigWidget(QWidget):
+    """GUI for configuring OCR fields with region selection"""
+
+    def __init__(self):
+        super().__init__()
+        self.image = None
+        self.ocr_fields = []
+        self.current_ocr_field = None
+        self.drawing = False
+        self.start_point = None
+        self.current_rect = None
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Controls
+        controls = QHBoxLayout()
+
+        load_btn = QPushButton("Load Reference Image")
+        load_btn.clicked.connect(self.load_image)
+        controls.addWidget(load_btn)
+
+        add_ocr_btn = QPushButton("Add OCR Field")
+        add_ocr_btn.clicked.connect(self.add_ocr_field)
+        controls.addWidget(add_ocr_btn)
+
+        save_btn = QPushButton("Save OCR Fields")
+        save_btn.clicked.connect(self.save_ocr_fields)
+        controls.addWidget(save_btn)
+
+        load_ocr_btn = QPushButton("Load OCR Fields")
+        load_ocr_btn.clicked.connect(self.load_ocr_fields)
+        controls.addWidget(load_ocr_btn)
+
+        clear_rect_btn = QPushButton("Clear Current Rectangle")
+        clear_rect_btn.clicked.connect(self.clear_current_rect)
+        controls.addWidget(clear_rect_btn)
+
+        layout.addLayout(controls)
+
+        # OCR fields list
+        self.ocr_fields_list = QListWidget()
+        self.ocr_fields_list.currentRowChanged.connect(self.on_ocr_field_selected)
+        layout.addWidget(QLabel("OCR Fields:"))
+        layout.addWidget(self.ocr_fields_list)
+
+        # OCR field configuration
+        ocr_config = QGroupBox("OCR Field Configuration")
+        ocr_layout = QGridLayout()
+
+        ocr_layout.addWidget(QLabel("Field Name:"), 0, 0)
+        self.ocr_field_name = QLineEdit()
+        ocr_layout.addWidget(self.ocr_field_name, 0, 1)
+
+        ocr_layout.addWidget(QLabel("Regex Pattern:"), 1, 0)
+        self.ocr_pattern = QLineEdit()
+        self.ocr_pattern.setPlaceholderText("e.g., [A-Z]\\d{6,}")
+        ocr_layout.addWidget(self.ocr_pattern, 1, 1)
+
+        ocr_layout.addWidget(QLabel("Region (x, y, width, height):"), 2, 0)
+        self.ocr_region = QLineEdit()
+        self.ocr_region.setReadOnly(True)
+        ocr_layout.addWidget(self.ocr_region, 2, 1)
+
+        select_region_btn = QPushButton("Select Region on Image")
+        select_region_btn.clicked.connect(self.start_region_selection)
+        ocr_layout.addWidget(select_region_btn, 3, 0, 1, 2)
+
+        remove_ocr_btn = QPushButton("Remove OCR Field")
+        remove_ocr_btn.clicked.connect(self.remove_ocr_field)
+        ocr_layout.addWidget(remove_ocr_btn, 4, 0, 1, 2)
+
+        ocr_config.setLayout(ocr_layout)
+        layout.addWidget(ocr_config)
+
+        # Image display
+        self.scroll = QScrollArea()
+        self.image_label = QLabel()
+        self.image_label.setMouseTracking(True)
+        self.image_label.mousePressEvent = self.on_image_press
+        self.image_label.mouseMoveEvent = self.on_image_move
+        self.image_label.mouseReleaseEvent = self.on_image_release
+        self.scroll.setWidget(self.image_label)
+        self.scroll.setWidgetResizable(True)
+        layout.addWidget(self.scroll)
+
+        # Status
+        self.status_label = QLabel("Load an image to start")
+        layout.addWidget(self.status_label)
+
+        self.setLayout(layout)
+
+    def load_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Image", "", "Images (*.png *.jpg *.jpeg)"
+        )
+        if file_path:
+            self.image = QPixmap(file_path)
+            self.update_display()
+            self.status_label.setText("Image loaded. Add OCR fields and select regions.")
+
+    def add_ocr_field(self):
+        if self.image is None:
+            QMessageBox.warning(self, "Warning", "Load an image first!")
+            return
+
+        name = self.ocr_field_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Warning", "Enter a field name!")
+            return
+
+        pattern = self.ocr_pattern.text().strip()
+        if not pattern:
+            QMessageBox.warning(self, "Warning", "Enter a regex pattern!")
+            return
+
+        ocr_field = {
+            "name": name,
+            "pattern": pattern,
+            "region": None
+        }
+
+        self.ocr_fields.append(ocr_field)
+        self.ocr_fields_list.addItem(f"{name} - {pattern}")
+        self.status_label.setText(f"OCR field '{name}' added. Select region on image.")
+
+        self.ocr_field_name.clear()
+        self.ocr_pattern.clear()
+        self.ocr_region.clear()
+
+    def on_ocr_field_selected(self, row):
+        if 0 <= row < len(self.ocr_fields):
+            self.current_ocr_field = self.ocr_fields[row]
+            self.ocr_field_name.setText(self.current_ocr_field["name"])
+            self.ocr_pattern.setText(self.current_ocr_field["pattern"])
+            
+            region = self.current_ocr_field.get("region")
+            if region:
+                self.ocr_region.setText(f"{region['x']}, {region['y']}, {region['width']}, {region['height']}")
+            else:
+                self.ocr_region.setText("")
+            
+            self.update_display()
+
+    def remove_ocr_field(self):
+        row = self.ocr_fields_list.currentRow()
+        if row >= 0:
+            del self.ocr_fields[row]
+            self.ocr_fields_list.takeItem(row)
+            self.current_ocr_field = None
+            self.ocr_field_name.clear()
+            self.ocr_pattern.clear()
+            self.ocr_region.clear()
+            self.status_label.setText("OCR field removed.")
+            self.update_display()
+
+    def start_region_selection(self):
+        if self.current_ocr_field is None:
+            QMessageBox.warning(self, "Warning", "Select an OCR field from the list first!")
+            return
+        
+        if self.image is None:
+            QMessageBox.warning(self, "Warning", "Load an image first!")
+            return
+        
+        self.status_label.setText("Click and drag on image to select region...")
+
+    def on_image_press(self, event):
+        if self.current_ocr_field is None:
+            return
+        
+        self.drawing = True
+        self.start_point = event.pos()
+        self.current_rect = None
+
+    def on_image_move(self, event):
+        if not self.drawing or self.start_point is None:
+            return
+        
+        current_pos = event.pos()
+        self.current_rect = QRect(self.start_point, current_pos)
+        self.update_display()
+
+    def on_image_release(self, event):
+        if not self.drawing or self.start_point is None:
+            return
+        
+        self.drawing = False
+        end_pos = event.pos()
+        
+        rect = QRect(self.start_point, end_pos).normalized()
+        
+        if rect.width() > 10 and rect.height() > 10:  # Minimum size check
+            if self.current_ocr_field is not None:
+                self.current_ocr_field["region"] = {
+                    "x": rect.x(),
+                    "y": rect.y(),
+                    "width": rect.width(),
+                    "height": rect.height()
+                }
+                self.ocr_region.setText(f"{rect.x()}, {rect.y()}, {rect.width()}, {rect.height()}")
+                self.status_label.setText(f"Region selected: {rect.width()}x{rect.height()} at ({rect.x()}, {rect.y()})")
+        else:
+            self.status_label.setText("Region too small. Please select a larger area.")
+        
+        self.start_point = None
+        self.update_display()
+
+    def clear_current_rect(self):
+        if self.current_ocr_field:
+            self.current_ocr_field["region"] = None
+            self.ocr_region.clear()
+            self.status_label.setText("Region cleared for current OCR field.")
+            self.update_display()
+
+    def update_display(self):
+        if self.image is None:
+            return
+
+        pixmap = self.image.copy()
+        painter = QPainter(pixmap)
+
+        # Draw all OCR field regions
+        for i, ocr_field in enumerate(self.ocr_fields):
+            region = ocr_field.get("region")
+            if region:
+                x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+                
+                # Use different color for current field
+                if ocr_field == self.current_ocr_field:
+                    color = QColor(255, 0, 0)  # Red for current
+                else:
+                    color = QColor(0, 255, 0)  # Green for others
+                
+                painter.setPen(QPen(color, 2))
+                painter.drawRect(x, y, w, h)
+                
+                # Draw label
+                painter.setPen(QPen(color, 2))
+                painter.drawText(x + 5, y + 20, ocr_field["name"])
+
+        # Draw current selection rectangle
+        if self.current_rect is not None:
+            painter.setPen(QPen(QColor(255, 255, 0), 2))
+            painter.drawRect(self.current_rect)
+
+        painter.end()
+        self.image_label.setPixmap(pixmap)
+
+    def save_ocr_fields(self):
+        if not self.ocr_fields:
+            QMessageBox.warning(self, "Warning", "No OCR fields to save!")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save OCR Fields", "", "JSON Files (*.json)"
+        )
+        if file_path:
+            ocr_data = {"ocr_fields": {}}
+            for field in self.ocr_fields:
+                ocr_data["ocr_fields"][field["name"]] = {
+                    "pattern": field["pattern"],
+                    "region": field["region"]
+                }
+            
+            with open(file_path, "w") as f:
+                json.dump(ocr_data, f, indent=2)
+            QMessageBox.information(self, "Success", "OCR fields saved!")
+
+    def load_ocr_fields(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load OCR Fields", "", "JSON Files (*.json)"
+        )
+        if file_path:
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                
+                self.ocr_fields = []
+                self.ocr_fields_list.clear()
+                
+                for name, field_data in data.get("ocr_fields", {}).items():
+                    ocr_field = {
+                        "name": name,
+                        "pattern": field_data["pattern"],
+                        "region": field_data["region"]
+                    }
+                    self.ocr_fields.append(ocr_field)
+                    self.ocr_fields_list.addItem(f"{name} - {field_data['pattern']}")
+                
+                self.status_label.setText("OCR fields loaded.")
+                self.update_display()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load OCR fields: {str(e)}")
+
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
@@ -1029,9 +1460,11 @@ class OMRApplication(QMainWindow):
         # Add tabs
         self.template_creator = TemplateCreator()
         self.sheet_processor = SheetProcessor()
+        self.ocr_config = OCRConfigWidget()
 
         tabs.addTab(self.template_creator, "Template Creator")
         tabs.addTab(self.sheet_processor, "Sheet Processor")
+        tabs.addTab(self.ocr_config, "OCR Configuration")
 
         self.setCentralWidget(tabs)
 
