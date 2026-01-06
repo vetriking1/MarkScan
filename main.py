@@ -19,7 +19,7 @@ pytesseract.pytesseract.tesseract_cmd = (
 )
 from pdf2image import convert_from_path
 from PyQt5.QtCore import QPoint, QRect, Qt
-from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -604,6 +604,17 @@ class TemplateCreator(QWidget):
         self.template_data = {"fields": {}, "image_size": None}
         self.current_field = None
         self.bubbles = []
+        
+        # Interactive rectangle state
+        self.field_rect = None  # QRect for field area
+        self.field_confirmed = False  # Confirmed with Enter
+        self.creating_rect = False  # Creating new rectangle with mouse drag
+        self.dragging = False
+        self.resizing = False
+        self.drag_offset = QPoint()
+        self.resize_handle_size = 10
+        self.resize_corner = None  # 'tl', 'tr', 'bl', 'br' (top-left, etc.)
+        
         self.init_ui()
 
     def init_ui(self):
@@ -683,6 +694,10 @@ class TemplateCreator(QWidget):
         clear_field_btn.clicked.connect(self.clear_field)
         field_layout.addWidget(clear_field_btn, 9, 0, 1, 2)
 
+        confirm_rect_btn = QPushButton("Confirm Rectangle (Enter)")
+        confirm_rect_btn.clicked.connect(self.confirm_rectangle)
+        field_layout.addWidget(confirm_rect_btn, 10, 0, 1, 2)
+
         field_config.setLayout(field_layout)
         layout.addWidget(field_config)
 
@@ -691,6 +706,8 @@ class TemplateCreator(QWidget):
         self.image_label = QLabel()
         self.image_label.setMouseTracking(True)
         self.image_label.mousePressEvent = self.on_image_click
+        self.image_label.mouseMoveEvent = self.on_image_move
+        self.image_label.mouseReleaseEvent = self.on_image_release
         self.scroll.setWidget(self.image_label)
         self.scroll.setWidgetResizable(True)
         layout.addWidget(self.scroll)
@@ -700,6 +717,19 @@ class TemplateCreator(QWidget):
         layout.addWidget(self.status_label)
 
         self.setLayout(layout)
+
+    def keyPressEvent(self, event):
+        if event.key() == 16777220 or event.key() == 16777221:  # Return/Enter keys
+            if self.current_field is not None and self.field_rect is not None:
+                field_type = self.current_field["type"]
+                if field_type in ["grid", "horizontal", "mcq"]:
+                    # Confirm rectangle (green)
+                    field_name = self.current_field["name"]
+                    self.save_current_field()
+                    self.field_confirmed = True
+                    self.update_display()
+                    self.status_label.setText(f"Rectangle confirmed (green). Field '{field_name}' created! Rectangle is still draggable/resizable.")
+        super().keyPressEvent(event)
 
     def on_type_changed(self, type_name):
         if type_name == "horizontal":
@@ -758,90 +788,306 @@ class TemplateCreator(QWidget):
                 self.current_field["correct_answers"] = []
         
         self.bubbles = []
-        self.status_label.setText(
-            f"Click on the FIRST bubble position (top-left) for '{name}'"
-        )
+        self.field_rect = None
+        self.field_confirmed = False
+        self.creating_rect = False
+        
+        # For grid, horizontal, and mcq types, set up interactive rectangle
+        field_type = self.current_field["type"]
+        if field_type in ["grid", "horizontal", "mcq"]:
+            self.status_label.setText(
+                f"Click and drag to create rectangle area for '{name}', then adjust to fit bubbles. "
+                f"Press Enter to confirm (changes color to green and keeps it resizable)."
+            )
+        else:
+            self.status_label.setText(
+                f"Click on the FIRST bubble position (top-left) for '{name}'"
+            )
 
     def on_image_click(self, event):
         if self.current_field is None:
             return
 
-        # If no bubbles added yet, this is the first bubble - generate all others
-        if len(self.bubbles) == 0:
-            pos = event.pos()
-            start_x, start_y = pos.x(), pos.y()
+        field_type = self.current_field["type"]
+        pos = event.pos()
 
-            # Generate all bubbles based on first position and gaps
-            cols = self.current_field["cols"]
-            rows = self.current_field["rows"]
-            row_gap = self.current_field["row_gap"]
-            col_gap = self.current_field["col_gap"]
-            radius = self.current_field["radius"]
-            field_type = self.current_field["type"]
-
-            for col in range(cols):
-                for row in range(rows):
-                    x = start_x + (col * col_gap)
-                    y = start_y + (row * row_gap)
-
-                    # Assign value based on field type
-                    if field_type == "horizontal":
-                        value = col + 1  # Start from 1 for horizontal
-                    elif field_type == "mcq":
-                        value = chr(65 + col)  # A, B, C, D based on column
-                    else:
-                        value = row  # 0-9 values for grid
-
-                    bubble = {
-                        "x": x,
-                        "y": y,
-                        "radius": radius,
-                        "col": col,
-                        "row": row,
-                        "value": value,
-                    }
-                    self.bubbles.append(bubble)
-
-            # Automatically save the field
-            self.current_field["bubbles"] = self.bubbles
-            field_name = self.current_field["name"]
-
-            field_data = {
-                "type": self.current_field["type"],
-                "cols": self.current_field["cols"],
-                "rows": self.current_field["rows"],
-                "bubbles": self.current_field["bubbles"],
-            }
-            
-            if "correct_answers" in self.current_field:
-                field_data["correct_answers"] = self.current_field["correct_answers"]
-            
-            self.template_data["fields"][field_name] = field_data
-
-            self.update_display()
-            self.status_label.setText(
-                f"Field '{field_name}' created with {len(self.bubbles)} bubbles! Add another field or save template."
-            )
-
-            self.current_field = None
-            self.bubbles = []
+        # Handle rectangle interaction for grid/horizontal/mcq types
+        if field_type in ["grid", "horizontal", "mcq"]:
+            if self.field_rect is not None:
+                # Check if clicking on resize handle
+                if self.is_on_resize_handle(pos):
+                    self.resizing = True
+                    self.resize_corner = self.get_resize_corner(pos)
+                # Check if clicking inside rectangle (for dragging)
+                elif self.field_rect.contains(pos):
+                    self.dragging = True
+                    self.drag_offset = pos - self.field_rect.topLeft()
+                return
+            else:
+                # Start creating rectangle
+                self.start_x = pos.x()
+                self.start_y = pos.y()
+                self.field_rect = QRect(pos.x(), pos.y(), 0, 0)
+                self.creating_rect = True
+                return
         else:
-            # This shouldn't happen with auto-generation, but keep for safety
-            self.status_label.setText(
-                "Field already generated. Click 'Clear Current Field' to start over."
-            )
+            # Original behavior for other types
+            if len(self.bubbles) == 0:
+                start_x, start_y = pos.x(), pos.y()
+                self.generate_bubbles_from_position(start_x, start_y)
+            return
+
+    def on_image_move(self, event):
+        if self.current_field is None or self.field_rect is None:
+            return
+
+        field_type = self.current_field["type"]
+        if field_type not in ["grid", "horizontal", "mcq"]:
+            return
+
+        pos = event.pos()
+
+        if self.resizing:
+            # Resize rectangle
+            rect = self.field_rect
+            if self.resize_corner == "br":
+                rect.setBottomRight(pos)
+            elif self.resize_corner == "bl":
+                rect.setBottomLeft(pos)
+            elif self.resize_corner == "tr":
+                rect.setTopRight(pos)
+            elif self.resize_corner == "tl":
+                rect.setTopLeft(pos)
+            self.field_rect = rect.normalized()
+            
+        elif self.dragging:
+            # Move rectangle
+            new_pos = pos - self.drag_offset
+            self.field_rect.moveTo(new_pos)
+        elif self.creating_rect:
+            # Currently creating rectangle - follows mouse
+            self.field_rect = QRect(self.start_x, self.start_y, 
+                                pos.x() - self.start_x, 
+                                pos.y() - self.start_y).normalized()
+        else:
+            # Not creating, not dragging, not resizing - do nothing
+            return
+
+        # Update bubble positions based on rectangle
+        if self.field_rect.width() > 50 and self.field_rect.height() > 50:
+            self.update_gaps_from_rectangle()
+            self.generate_bubbles_from_rect()
+
+        self.update_display()
+
+    def on_image_release(self, event):
+        if self.current_field is None:
+            return
+
+        field_type = self.current_field["type"]
+        if field_type not in ["grid", "horizontal", "mcq"]:
+            return
+
+        self.dragging = False
+        self.resizing = False
+        self.resize_corner = None
+        
+        if self.creating_rect:
+            self.creating_rect = False
+            if self.field_rect.width() > 50 and self.field_rect.height() > 50:
+                self.update_gaps_from_rectangle()
+                self.generate_bubbles_from_rect()
+                self.status_label.setText("Rectangle created. Drag to resize/move, or press Enter to confirm (green).")
+
+    def is_on_resize_handle(self, pos):
+        if self.field_rect is None or self.creating_rect:
+            return False
+        
+        handle_size = self.resize_handle_size
+        corners = {
+            "tl": self.field_rect.topLeft(),
+            "tr": self.field_rect.topRight(),
+            "bl": self.field_rect.bottomLeft(),
+            "br": self.field_rect.bottomRight()
+        }
+        
+        for corner_name, corner_pos in corners.items():
+            handle_rect = QRect(corner_pos.x() - handle_size//2, 
+                              corner_pos.y() - handle_size//2,
+                              handle_size, handle_size)
+            if handle_rect.contains(pos):
+                return True
+        
+        return False
+
+    def get_resize_corner(self, pos):
+        if self.field_rect is None or self.creating_rect:
+            return None
+        
+        handle_size = self.resize_handle_size
+        corners = {
+            "tl": self.field_rect.topLeft(),
+            "tr": self.field_rect.topRight(),
+            "bl": self.field_rect.bottomLeft(),
+            "br": self.field_rect.bottomRight()
+        }
+        
+        for corner_name, corner_pos in corners.items():
+            handle_rect = QRect(corner_pos.x() - handle_size//2, 
+                              corner_pos.y() - handle_size//2,
+                              handle_size, handle_size)
+            if handle_rect.contains(pos):
+                return corner_name
+        
+        return None
+
+    def update_gaps_from_rectangle(self):
+        if self.field_rect is None or self.current_field is None:
+            return
+        
+        cols = self.current_field["cols"]
+        rows = self.current_field["rows"]
+        
+        if cols > 1:
+            col_gap = self.field_rect.width() // cols
+            self.col_gap_spin.setValue(max(10, col_gap))
+        
+        if rows > 1:
+            row_gap = self.field_rect.height() // rows
+            self.row_gap_spin.setValue(max(10, row_gap))
+        
+        # Calculate radius as ~15% of the smaller gap
+        min_gap = min(self.col_gap_spin.value(), self.row_gap_spin.value())
+        radius = int(min_gap * 0.35)
+        radius = max(5, min(radius, 50))
+        self.radius_spin.setValue(radius)
+
+    def generate_bubbles_from_position(self, start_x, start_y):
+        cols = self.current_field["cols"]
+        rows = self.current_field["rows"]
+        row_gap = self.current_field["row_gap"]
+        col_gap = self.current_field["col_gap"]
+        radius = self.current_field["radius"]
+        field_type = self.current_field["type"]
+
+        for col in range(cols):
+            for row in range(rows):
+                x = start_x + (col * col_gap)
+                y = start_y + (row * row_gap)
+
+                if field_type == "horizontal":
+                    value = col + 1
+                elif field_type == "mcq":
+                    value = chr(65 + col)
+                else:
+                    value = row
+
+                bubble = {
+                    "x": x,
+                    "y": y,
+                    "radius": radius,
+                    "col": col,
+                    "row": row,
+                    "value": value,
+                }
+                self.bubbles.append(bubble)
+
+        self.save_current_field()
+
+    def generate_bubbles_from_rect(self):
+        if self.field_rect is None or self.current_field is None:
+            return
+        
+        cols = self.current_field["cols"]
+        rows = self.current_field["rows"]
+        radius = self.current_field["radius"]
+        field_type = self.current_field["type"]
+        
+        # Calculate positions based on rectangle
+        row_gap = self.field_rect.height() // rows if rows > 1 else self.field_rect.height()
+        col_gap = self.field_rect.width() // cols if cols > 1 else self.field_rect.width()
+
+        start_x = self.field_rect.x()
+        start_y = self.field_rect.y()
+        
+        self.bubbles = []
+        
+        for col in range(cols):
+            for row in range(rows):
+                # Center bubble in its cell
+                x = start_x + (col * col_gap) + (col_gap // 2)
+                y = start_y + (row * row_gap) + (row_gap // 2)
+
+                if field_type == "horizontal":
+                    value = col + 1
+                elif field_type == "mcq":
+                    value = chr(65 + col)  # A, B, C, D based on column
+                else:
+                    value = row
+
+                bubble = {
+                    "x": x,
+                    "y": y,
+                    "radius": radius,
+                    "col": col,
+                    "row": row,
+                    "value": value,
+                }
+                self.bubbles.append(bubble)
+
+    def save_current_field(self):
+        self.current_field["bubbles"] = self.bubbles
+        field_name = self.current_field["name"]
+
+        field_data = {
+            "type": self.current_field["type"],
+            "cols": self.current_field["cols"],
+            "rows": self.current_field["rows"],
+            "bubbles": self.current_field["bubbles"],
+        }
+        
+        if "correct_answers" in self.current_field:
+            field_data["correct_answers"] = self.current_field["correct_answers"]
+        
+        self.template_data["fields"][field_name] = field_data
+
+        self.update_display()
+        self.status_label.setText(
+            f"Field '{field_name}' created with {len(self.bubbles)} bubbles! Add another field or save template."
+        )
+
+        self.current_field = None
+        self.bubbles = []
+        self.field_rect = None
 
     def clear_field(self):
-        """Clear the current field being created"""
-        if self.current_field is not None or self.bubbles:
+        """Clear/Reset current field being created"""
+        if self.current_field is not None or self.bubbles or self.field_rect is not None:
             self.current_field = None
             self.bubbles = []
+            self.field_rect = None
+            self.field_confirmed = False
+            self.creating_rect = False
             self.update_display()
             self.status_label.setText(
                 "Current field cleared. Configure and start a new field."
             )
         else:
             self.status_label.setText("No active field to clear.")
+
+    def confirm_rectangle(self):
+        """Confirm rectangle (changes color to green but keeps it resizable)"""
+        if self.current_field is None or self.field_rect is None:
+            self.status_label.setText("No active rectangle to confirm.")
+            return
+        
+        field_type = self.current_field["type"]
+        if field_type in ["grid", "horizontal", "mcq"]:
+            # Save field name before it gets cleared
+            field_name = self.current_field["name"]
+            self.save_current_field()
+            self.field_confirmed = True
+            self.status_label.setText(f"Rectangle confirmed (green). Field '{field_name}' created! Rectangle is still draggable/resizable.")
 
     def finish_field(self):
         # This method is no longer needed since fields auto-save,
@@ -873,6 +1119,42 @@ class TemplateCreator(QWidget):
                 painter.drawEllipse(
                     QPoint(bubble["x"], bubble["y"]), bubble["radius"], bubble["radius"]
                 )
+
+        # Draw interactive rectangle for grid/horizontal/mcq types
+        if self.field_rect is not None:
+            if self.field_confirmed:
+                # Confirmed rectangle - green color
+                painter.setPen(QPen(QColor(0, 255, 0), 3))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 50)))
+            elif self.creating_rect:
+                # Creating rectangle - blue color
+                painter.setPen(QPen(QColor(0, 0, 255), 2))
+                painter.setBrush(QBrush(QColor(0, 0, 255, 30)))
+            else:
+                # Unconfirmed rectangle - cyan color
+                painter.setPen(QPen(QColor(0, 255, 255), 2))
+                painter.setBrush(QBrush(QColor(0, 255, 255, 30)))
+            
+            painter.drawRect(self.field_rect)
+            
+            # Draw resize handles (only when not confirmed and not creating)
+            if not self.field_confirmed and not self.creating_rect:
+                handle_size = self.resize_handle_size
+                corners = [
+                    self.field_rect.topLeft(),
+                    self.field_rect.topRight(),
+                    self.field_rect.bottomLeft(),
+                    self.field_rect.bottomRight()
+                ]
+                
+                painter.setBrush(QBrush(QColor(255, 255, 0)))
+                for corner in corners:
+                    painter.drawRect(
+                        corner.x() - handle_size//2,
+                        corner.y() - handle_size//2,
+                        handle_size,
+                        handle_size
+                    )
 
         painter.end()
         self.image_label.setPixmap(pixmap)
