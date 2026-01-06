@@ -13,9 +13,11 @@ import cv2
 import numpy as np
 import pandas as pd
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\vetri\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Users\vetri\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+)
 from pdf2image import convert_from_path
-from pyzbar.pyzbar import decode
 from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
@@ -38,6 +40,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from pyzbar.pyzbar import decode
 
 # ============================================================================
 # CORE OMR PROCESSING LOGIC (Separate from GUI)
@@ -60,26 +63,26 @@ class OMRProcessor:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             else:
                 gray = image
-            
+
             # Try to detect barcodes
             barcodes = decode(gray)
-            
+
             if barcodes:
                 # Return the first barcode found
-                barcode_data = barcodes[0].data.decode('utf-8')
+                barcode_data = barcodes[0].data.decode("utf-8")
                 if self.debug_mode:
                     print(f"Barcode detected: {barcode_data}")
                 return barcode_data
-            
+
             # If no barcode found in grayscale, try with original image
             if len(image.shape) == 3:
                 barcodes = decode(image)
                 if barcodes:
-                    barcode_data = barcodes[0].data.decode('utf-8')
+                    barcode_data = barcodes[0].data.decode("utf-8")
                     if self.debug_mode:
                         print(f"Barcode detected: {barcode_data}")
                     return barcode_data
-            
+
             if self.debug_mode:
                 print("No barcode detected")
             return None
@@ -96,78 +99,95 @@ class OMRProcessor:
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             else:
                 gray = image
-            
+
             # Focus on left portion of image where code typically appears
             h, w = gray.shape
-            left_portion = gray[:, :int(w * 0.3)]  # Left 30% of image
-            
+            left_portion = gray[:, : int(w * 0.3)]  # Left 30% of image
+
             # Aggressive preprocessing for better OCR
             # 1. Resize to improve OCR accuracy
             scale_factor = 2
-            resized = cv2.resize(left_portion, None, fx=scale_factor, fy=scale_factor, 
-                               interpolation=cv2.INTER_CUBIC)
-            
+            resized = cv2.resize(
+                left_portion,
+                None,
+                fx=scale_factor,
+                fy=scale_factor,
+                interpolation=cv2.INTER_CUBIC,
+            )
+
             # 2. Apply bilateral filter to reduce noise while keeping edges
             filtered = cv2.bilateralFilter(resized, 9, 75, 75)
-            
+
             # 3. Multiple thresholding approaches
-            _, thresh1 = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
+            _, thresh1 = cv2.threshold(
+                filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+
             # Invert if background is dark
             if np.mean(thresh1) < 127:
                 thresh1 = cv2.bitwise_not(thresh1)
-            
+
             # 4. Morphological operations to clean up
             kernel = np.ones((2, 2), np.uint8)
             morph = cv2.morphologyEx(thresh1, cv2.MORPH_CLOSE, kernel)
-            
+
             # Try OCR with multiple PSM modes and images
             all_text = []
             psm_modes = [6, 7, 11, 12, 13]  # Different page segmentation modes
-            
+
             for psm in psm_modes:
                 # Try on preprocessed image
-                text = pytesseract.image_to_string(morph, config=f'--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                text = pytesseract.image_to_string(
+                    morph,
+                    config=f"--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                )
                 all_text.append(text)
-                
+
                 # Try on resized only
-                text2 = pytesseract.image_to_string(resized, config=f'--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                text2 = pytesseract.image_to_string(
+                    resized,
+                    config=f"--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                )
                 all_text.append(text2)
-            
+
             # Also try on full image with specific config
-            full_text = pytesseract.image_to_string(gray, config='--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+            full_text = pytesseract.image_to_string(
+                gray,
+                config="--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            )
             all_text.append(full_text)
-            
+
             # Combine all OCR results
-            combined_text = '\n'.join(all_text)
-            
+            combined_text = "\n".join(all_text)
+
             if self.debug_mode:
                 print(f"OCR Raw Text Sample: {combined_text[:300]}")
-            
+
             # Use regex to find pattern: 1 letter followed by 6+ digits
-            pattern = r'[A-Z]\d{6,}'
+            pattern = r"[A-Z]\d{6,}"
             matches = re.findall(pattern, combined_text)
-            
+
             if matches:
                 # Return the most common match
                 from collections import Counter
+
                 code = Counter(matches).most_common(1)[0][0]
                 if self.debug_mode:
                     print(f"Code extracted: {code} (from {len(matches)} matches)")
                 return code
-            
+
             # If no match, try more lenient pattern (in case C is misread)
             # Look for standalone 6+ digit numbers and check if preceded by letter
-            lenient_pattern = r'[A-Z]?\s*\d{6,}'
+            lenient_pattern = r"[A-Z]?\s*\d{6,}"
             lenient_matches = re.findall(lenient_pattern, combined_text)
-            
+
             if lenient_matches:
                 # Clean up matches and add 'C' if missing
                 for match in lenient_matches:
-                    cleaned = match.strip().replace(' ', '')
+                    cleaned = match.strip().replace(" ", "")
                     if cleaned and cleaned[0].isdigit() and len(cleaned) >= 6:
                         # Likely missing the letter, add 'C' as default
-                        code = 'C' + cleaned
+                        code = "C" + cleaned
                         if self.debug_mode:
                             print(f"Code extracted with correction: {code}")
                         return code
@@ -175,7 +195,7 @@ class OMRProcessor:
                         if self.debug_mode:
                             print(f"Code extracted: {cleaned}")
                         return cleaned
-            
+
             if self.debug_mode:
                 print("No code pattern found")
                 print(f"All text: {combined_text[:200]}")
@@ -284,8 +304,8 @@ class OMRProcessor:
         field_type = field_data["type"]
         bubbles = field_data["bubbles"]
 
-        if field_type == "vertical":
-            # Single column of bubbles (like semester)
+        if field_type == "horizontal":
+            # Single row of bubbles (like semester) - 1 row, multiple columns
             max_score = 0
             selected_value = None
 
@@ -396,15 +416,12 @@ class OMRProcessor:
 
         # Detect barcode
         barcode_number = self.detect_barcode(image)
-        
+
         # Extract code using OCR (letter + 6 digits)
         ocr_code = self.extract_code_with_ocr(image)
-        
+
         # Extract all fields
-        results = {
-            "barcode_number": barcode_number,
-            "ocr_code": ocr_code
-        }
+        results = {"barcode_number": barcode_number, "ocr_code": ocr_code}
         for field_name, field_data in self.template["fields"].items():
             value = self.extract_field_value(otsu, adaptive, gray, field_data)
             results[field_name] = value
@@ -483,7 +500,7 @@ class TemplateCreator(QWidget):
 
         field_layout.addWidget(QLabel("Type:"), 1, 0)
         self.field_type = QComboBox()
-        self.field_type.addItems(["vertical", "grid"])
+        self.field_type.addItems(["horizontal", "grid"])
         self.field_type.currentTextChanged.connect(self.on_type_changed)
         field_layout.addWidget(self.field_type, 1, 1)
 
@@ -544,11 +561,12 @@ class TemplateCreator(QWidget):
         self.setLayout(layout)
 
     def on_type_changed(self, type_name):
-        if type_name == "vertical":
-            self.cols_spin.setValue(1)
-            self.cols_spin.setEnabled(False)
-        else:
+        if type_name == "horizontal":
+            self.rows_spin.setValue(1)
+            self.rows_spin.setEnabled(False)
             self.cols_spin.setEnabled(True)
+        else:
+            self.rows_spin.setEnabled(True)
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -600,11 +618,18 @@ class TemplateCreator(QWidget):
             row_gap = self.current_field["row_gap"]
             col_gap = self.current_field["col_gap"]
             radius = self.current_field["radius"]
+            field_type = self.current_field["type"]
 
             for col in range(cols):
                 for row in range(rows):
                     x = start_x + (col * col_gap)
                     y = start_y + (row * row_gap)
+
+                    # Assign value based on field type
+                    if field_type == "horizontal":
+                        value = col + 1  # Start from 1 for horizontal
+                    else:
+                        value = row  # 0-9 values for grid
 
                     bubble = {
                         "x": x,
@@ -612,7 +637,7 @@ class TemplateCreator(QWidget):
                         "radius": radius,
                         "col": col,
                         "row": row,
-                        "value": row,  # 0-9 values
+                        "value": value,
                     }
                     self.bubbles.append(bubble)
 
