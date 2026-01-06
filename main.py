@@ -324,6 +324,55 @@ class OMRProcessor:
 
             return selected_value
 
+        elif field_type == "mcq":
+            # MCQ questions - each row is a question, each column is answer option (A, B, C, D)
+            rows = field_data["rows"]
+            cols = field_data["cols"]
+            correct_answers = field_data.get("correct_answers", [])
+            
+            results = []
+            
+            for row in range(rows):
+                row_bubbles = [b for b in bubbles if b["row"] == row]
+                row_bubbles.sort(key=lambda x: x["col"])
+                
+                max_score = 0
+                selected_value = None
+                
+                for bubble in row_bubbles:
+                    is_filled, score = self.detect_filled_bubble(
+                        otsu_img,
+                        adaptive_img,
+                        gray_img,
+                        bubble["x"],
+                        bubble["y"],
+                        bubble["radius"],
+                    )
+                    if is_filled and score > max_score:
+                        max_score = score
+                        selected_value = bubble["value"]
+                
+                question_num = row + 1
+                
+                if selected_value is not None:
+                    is_correct = False
+                    if question_num - 1 < len(correct_answers):
+                        is_correct = selected_value == correct_answers[question_num - 1]
+                    
+                    results.append({
+                        "question": question_num,
+                        "answer": selected_value,
+                        "correct": is_correct
+                    })
+                else:
+                    results.append({
+                        "question": question_num,
+                        "answer": "",
+                        "correct": False
+                    })
+            
+            return results
+
         elif field_type == "grid":
             # Grid of bubbles (like register number, marks, etc.)
             cols = field_data["cols"]
@@ -500,7 +549,7 @@ class TemplateCreator(QWidget):
 
         field_layout.addWidget(QLabel("Type:"), 1, 0)
         self.field_type = QComboBox()
-        self.field_type.addItems(["horizontal", "grid"])
+        self.field_type.addItems(["horizontal", "grid", "mcq"])
         self.field_type.currentTextChanged.connect(self.on_type_changed)
         field_layout.addWidget(self.field_type, 1, 1)
 
@@ -534,13 +583,18 @@ class TemplateCreator(QWidget):
         self.col_gap_spin.setValue(50)
         field_layout.addWidget(self.col_gap_spin, 6, 1)
 
+        field_layout.addWidget(QLabel("Correct Answers (MCQ only):"), 7, 0)
+        self.correct_answers = QLineEdit()
+        self.correct_answers.setPlaceholderText("e.g., A,B,C,D,A,B,C,D (comma-separated)")
+        field_layout.addWidget(self.correct_answers, 7, 1)
+
         start_field_btn = QPushButton("Click First Bubble Position")
         start_field_btn.clicked.connect(self.start_field)
-        field_layout.addWidget(start_field_btn, 7, 0, 1, 2)
+        field_layout.addWidget(start_field_btn, 8, 0, 1, 2)
 
         clear_field_btn = QPushButton("Clear Current Field")
         clear_field_btn.clicked.connect(self.clear_field)
-        field_layout.addWidget(clear_field_btn, 8, 0, 1, 2)
+        field_layout.addWidget(clear_field_btn, 9, 0, 1, 2)
 
         field_config.setLayout(field_layout)
         layout.addWidget(field_config)
@@ -565,8 +619,16 @@ class TemplateCreator(QWidget):
             self.rows_spin.setValue(1)
             self.rows_spin.setEnabled(False)
             self.cols_spin.setEnabled(True)
+            self.correct_answers.setEnabled(False)
+        elif type_name == "mcq":
+            self.cols_spin.setValue(4)
+            self.cols_spin.setEnabled(True)
+            self.rows_spin.setEnabled(True)
+            self.correct_answers.setEnabled(True)
         else:
             self.rows_spin.setEnabled(True)
+            self.cols_spin.setEnabled(True)
+            self.correct_answers.setEnabled(False)
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -588,9 +650,11 @@ class TemplateCreator(QWidget):
             QMessageBox.warning(self, "Warning", "Enter a field name!")
             return
 
+        field_type = self.field_type.currentText()
+        
         self.current_field = {
             "name": name,
-            "type": self.field_type.currentText(),
+            "type": field_type,
             "cols": self.cols_spin.value(),
             "rows": self.rows_spin.value(),
             "radius": self.radius_spin.value(),
@@ -598,6 +662,14 @@ class TemplateCreator(QWidget):
             "col_gap": self.col_gap_spin.value(),
             "bubbles": [],
         }
+        
+        if field_type == "mcq":
+            correct_answers = self.correct_answers.text().strip().upper()
+            if correct_answers:
+                self.current_field["correct_answers"] = [ans.strip() for ans in correct_answers.split(",")]
+            else:
+                self.current_field["correct_answers"] = []
+        
         self.bubbles = []
         self.status_label.setText(
             f"Click on the FIRST bubble position (top-left) for '{name}'"
@@ -628,6 +700,8 @@ class TemplateCreator(QWidget):
                     # Assign value based on field type
                     if field_type == "horizontal":
                         value = col + 1  # Start from 1 for horizontal
+                    elif field_type == "mcq":
+                        value = chr(65 + col)  # A, B, C, D based on column
                     else:
                         value = row  # 0-9 values for grid
 
@@ -645,12 +719,17 @@ class TemplateCreator(QWidget):
             self.current_field["bubbles"] = self.bubbles
             field_name = self.current_field["name"]
 
-            self.template_data["fields"][field_name] = {
+            field_data = {
                 "type": self.current_field["type"],
                 "cols": self.current_field["cols"],
                 "rows": self.current_field["rows"],
                 "bubbles": self.current_field["bubbles"],
             }
+            
+            if "correct_answers" in self.current_field:
+                field_data["correct_answers"] = self.current_field["correct_answers"]
+            
+            self.template_data["fields"][field_name] = field_data
 
             self.update_display()
             self.status_label.setText(
@@ -886,7 +965,27 @@ class SheetProcessor(QWidget):
         for i, result in enumerate(self.results):
             for j, col in enumerate(columns):
                 value = result.get(col, "")
-                self.table.setItem(i, j, QTableWidgetItem(str(value)))
+                
+                # Format MCQ results nicely
+                if isinstance(value, list):
+                    formatted_answers = []
+                    correct_count = 0
+                    for item in value:
+                        if isinstance(item, dict):
+                            answer_str = f"Q{item['question']}:{item['answer']}"
+                            if item['correct']:
+                                answer_str += "(✓)"
+                                correct_count += 1
+                            else:
+                                answer_str += "(✗)"
+                            formatted_answers.append(answer_str)
+                    
+                    score_str = f"Score: {correct_count}/{len(value)}"
+                    value = " | ".join(formatted_answers) + " | " + score_str
+                else:
+                    value = str(value)
+                
+                self.table.setItem(i, j, QTableWidgetItem(value))
 
         self.table.resizeColumnsToContents()
 
