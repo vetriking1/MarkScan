@@ -1665,7 +1665,7 @@ class OCRConfigWidget(QWidget):
         left_layout.addWidget(ocr_fields_label)
 
         self.ocr_fields_list = QListWidget()
-        self.ocr_fields_list.setMaximumHeight(120)
+        self.ocr_fields_list.setMaximumHeight(400)
         self.ocr_fields_list.setStyleSheet("QListWidget { font-size: 11px; }")
         self.ocr_fields_list.currentRowChanged.connect(self.on_ocr_field_selected)
         left_layout.addWidget(self.ocr_fields_list)
@@ -1735,7 +1735,7 @@ class OCRConfigWidget(QWidget):
 
         content_splitter.setStretchFactor(0, 0)
         content_splitter.setStretchFactor(1, 1)
-        content_splitter.setSizes([250, 700])
+        content_splitter.setSizes([250, 750])
 
         main_layout.addWidget(content_splitter, 1)
 
