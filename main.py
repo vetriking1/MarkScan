@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -664,9 +665,17 @@ class BubbleConfigForm(QGroupBox):
 
         # Bubble values tab
         self.values_table = QTableWidget()
+        self.values_table.setFont(QFont("Segoe UI", 12))
         self.values_table.setEditTriggers(QTableWidget.AllEditTriggers)
-        self.values_table.horizontalHeader().setStretchLastSection(True)
+        self.values_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.values_table.verticalHeader().setVisible(True)
+        self.values_table.verticalHeader().setDefaultSectionSize(50)
+        self.values_table.setStyleSheet("""
+            QTableWidget { gridline-color: #dee2e6; border: none; }
+            QTableWidget::item { padding: 5px; }
+            QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #dee2e6; }
+        """)
+        
         values_widget = QWidget()
         values_layout = QVBoxLayout()
         values_layout.setContentsMargins(0, 0, 0, 0)
@@ -676,9 +685,16 @@ class BubbleConfigForm(QGroupBox):
 
         # MCQ answers tab
         self.answers_table = QTableWidget()
+        self.answers_table.setFont(QFont("Segoe UI", 12))
         self.answers_table.setEditTriggers(QTableWidget.AllEditTriggers)
-        self.answers_table.horizontalHeader().setStretchLastSection(True)
+        self.answers_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.answers_table.verticalHeader().setVisible(True)
+        self.answers_table.verticalHeader().setDefaultSectionSize(50)
+        self.answers_table.setStyleSheet("""
+            QTableWidget { gridline-color: #dee2e6; border: none; }
+            QTableWidget::item { padding: 5px; }
+            QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #dee2e6; }
+        """)
         answers_widget = QWidget()
         answers_layout = QVBoxLayout()
         answers_layout.setContentsMargins(0, 0, 0, 0)
@@ -1022,20 +1038,18 @@ class TemplateCreator(QWidget):
 
         field_config.setLayout(field_layout)
         self.field_config_group = field_config
-        
-        self.field_config_container = QWidget()
-        field_config_container_layout = QVBoxLayout()
-        field_config_container_layout.addWidget(field_config)
+        main_layout.addWidget(self.field_config_group)
 
-        # Form-based bubble/answer configuration (in its own internal tabs)
+        # Create a vertical splitter for the image and the bubble form
+        self.editor_splitter = QSplitter(Qt.Vertical)
+        
+        # Bubble configuration form
         self.bubble_form = BubbleConfigForm(self)
         self.cols_spin.valueChanged.connect(self.on_dimensions_changed)
         self.rows_spin.valueChanged.connect(self.on_dimensions_changed)
-        field_config_container_layout.addWidget(self.bubble_form)
+        self.editor_splitter.addWidget(self.bubble_form)
 
-        self.field_config_container.setLayout(field_config_container_layout)
-        main_layout.addWidget(self.field_config_container)
-
+        # Image section
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("QScrollArea { border: 2px dashed #dee2e6; border-radius: 8px; background-color: #f8f9fa; }")
@@ -1047,7 +1061,14 @@ class TemplateCreator(QWidget):
         self.image_label.mouseMoveEvent = self.on_image_move
         self.image_label.mouseReleaseEvent = self.on_image_release
         self.scroll.setWidget(self.image_label)
-        main_layout.addWidget(self.scroll, 1)
+        
+        self.editor_splitter.addWidget(self.scroll)
+        
+        # Add splitter to layout with stretch
+        main_layout.addWidget(self.editor_splitter, 1)
+        
+        # Set initial sizes (form area smaller initially)
+        self.editor_splitter.setSizes([200, 600])
 
         self.status_label = QLabel("Load an image to start creating your template")
         self.status_label.setStyleSheet("color: #6c757d; font-style: italic; padding: 8px; background-color: #f8f9fa; border-radius: 6px;")
@@ -1058,7 +1079,8 @@ class TemplateCreator(QWidget):
     def toggle_controls(self):
         hidden = self.toggle_controls_btn.isChecked()
         self.controls_container.setVisible(not hidden)
-        self.field_config_container.setVisible(not hidden)
+        self.field_config_group.setVisible(not hidden)
+        self.bubble_form.setVisible(not hidden)
         self.toggle_controls_btn.setText("Show Controls" if hidden else "Hide Controls")
 
     def toggle_field_config(self):
