@@ -693,13 +693,15 @@ class BubbleConfigForm(QGroupBox):
         self.update_structure(self.field_type, self.rows, self.cols)
 
     def update_structure(self, field_type, rows, cols):
-        """Update tables based on field type and dimensions."""
+        prev_values = self._capture_values_table()
+        prev_answers = self._capture_answers_table()
         self.field_type = field_type
         self.rows = max(1, rows)
         self.cols = max(1, cols)
-
         self._build_values_table()
         self._build_answers_table()
+        self._restore_values_table(prev_values)
+        self._restore_answers_table(prev_answers)
 
     def _build_values_table(self):
         self.values_table.clear()
@@ -715,6 +717,32 @@ class BubbleConfigForm(QGroupBox):
             self.values_table.setHorizontalHeaderLabels(["Row Value"])
             self.values_table.setVerticalHeaderLabels([str(r) for r in range(self.rows)])
 
+    def _capture_values_table(self):
+        data = []
+        if self.values_table.rowCount() == 0 and self.values_table.columnCount() == 0:
+            return data
+        if self.field_type in ["horizontal", "mcq"]:
+            for c in range(self.values_table.columnCount()):
+                item = self.values_table.item(0, c)
+                data.append(item.text() if item else "")
+        else:
+            for r in range(self.values_table.rowCount()):
+                item = self.values_table.item(r, 0)
+                data.append(item.text() if item else "")
+        return data
+
+    def _restore_values_table(self, data):
+        if not data:
+            return
+        if self.field_type in ["horizontal", "mcq"]:
+            for c, text in enumerate(data[: self.cols]):
+                if text:
+                    self.values_table.setItem(0, c, QTableWidgetItem(text))
+        else:
+            for r, text in enumerate(data[: self.rows]):
+                if text:
+                    self.values_table.setItem(r, 0, QTableWidgetItem(text))
+
     def _build_answers_table(self):
         self.answers_table.clear()
 
@@ -728,6 +756,22 @@ class BubbleConfigForm(QGroupBox):
             self.answers_table.setRowCount(0)
             self.answers_table.setColumnCount(0)
             self.tabs.setTabEnabled(1, False)
+
+    def _capture_answers_table(self):
+        data = []
+        if self.answers_table.rowCount() == 0:
+            return data
+        for r in range(self.answers_table.rowCount()):
+            item = self.answers_table.item(r, 0)
+            data.append(item.text() if item else "")
+        return data
+
+    def _restore_answers_table(self, data):
+        if self.field_type != "mcq" or not data:
+            return
+        for r, text in enumerate(data[: self.rows]):
+            if text:
+                self.answers_table.setItem(r, 0, QTableWidgetItem(text))
 
     def get_bubble_values(self):
         """Collect bubble values from the table.
@@ -775,6 +819,28 @@ class BubbleConfigForm(QGroupBox):
 
         return answers
 
+    def set_bubble_values(self, values):
+        if values is None:
+            return
+        if self.field_type in ["horizontal", "mcq"]:
+            self.values_table.setRowCount(1)
+            self.values_table.setColumnCount(self.cols)
+            for c, text in enumerate(values[: self.cols]):
+                self.values_table.setItem(0, c, QTableWidgetItem(str(text)))
+        else:
+            self.values_table.setRowCount(self.rows)
+            self.values_table.setColumnCount(1)
+            for r, text in enumerate(values[: self.rows]):
+                self.values_table.setItem(r, 0, QTableWidgetItem(str(text)))
+
+    def set_correct_answers(self, answers):
+        if self.field_type != "mcq" or answers is None:
+            return
+        self.answers_table.setRowCount(self.rows)
+        self.answers_table.setColumnCount(1)
+        for r, text in enumerate(answers[: self.rows]):
+            self.answers_table.setItem(r, 0, QTableWidgetItem(str(text)))
+
 
 class TemplateCreator(QWidget):
     """GUI for creating OMR templates"""
@@ -819,6 +885,14 @@ class TemplateCreator(QWidget):
         self.toggle_controls_btn.clicked.connect(self.toggle_controls)
         header_layout.addWidget(self.toggle_controls_btn)
 
+        self.toggle_field_config_btn = QPushButton("Hide Field Config")
+        self.toggle_field_config_btn.setToolTip("Hide/Show only the field configuration panel")
+        self.toggle_field_config_btn.setMinimumHeight(38)
+        self.toggle_field_config_btn.setCheckable(True)
+        self.toggle_field_config_btn.setChecked(False)
+        self.toggle_field_config_btn.clicked.connect(self.toggle_field_config)
+        header_layout.addWidget(self.toggle_field_config_btn)
+
         main_layout.addLayout(header_layout)
 
         self.controls_container = QWidget()
@@ -854,6 +928,11 @@ class TemplateCreator(QWidget):
         field_layout = QFormLayout()
         field_layout.setSpacing(8)
         field_layout.setLabelAlignment(Qt.AlignRight)
+
+        self.field_select = QComboBox()
+        self.field_select.setMinimumHeight(32)
+        self.field_select.currentTextChanged.connect(self.on_field_selected)
+        field_layout.addRow("Existing:", self.field_select)
 
         self.field_name = QLineEdit()
         self.field_name.setPlaceholderText("e.g., Register Number")
@@ -942,6 +1021,7 @@ class TemplateCreator(QWidget):
         field_layout.addRow("", button_layout)
 
         field_config.setLayout(field_layout)
+        self.field_config_group = field_config
         
         self.field_config_container = QWidget()
         field_config_container_layout = QVBoxLayout()
@@ -981,6 +1061,12 @@ class TemplateCreator(QWidget):
         self.field_config_container.setVisible(not hidden)
         self.toggle_controls_btn.setText("Show Controls" if hidden else "Hide Controls")
 
+    def toggle_field_config(self):
+        hidden = self.toggle_field_config_btn.isChecked()
+        if hasattr(self, "field_config_group"):
+            self.field_config_group.setVisible(not hidden)
+        self.toggle_field_config_btn.setText("Show Field Config" if hidden else "Hide Field Config")
+
     def on_type_changed(self, type_name):
         """Handle changes to the field type and update form + controls."""
         if type_name == "horizontal":
@@ -1010,6 +1096,57 @@ class TemplateCreator(QWidget):
                 self.rows_spin.value(),
                 self.cols_spin.value(),
             )
+
+    def on_field_selected(self, name):
+        if not name:
+            return
+        if "fields" not in self.template_data:
+            return
+        if name not in self.template_data["fields"]:
+            return
+        data = self.template_data["fields"][name]
+        self.field_name.setText(name)
+        self.field_type.setCurrentText(data.get("type", "grid"))
+        self.cols_spin.setValue(int(data.get("cols", 1)))
+        self.rows_spin.setValue(int(data.get("rows", 1)))
+        if hasattr(self, "bubble_form"):
+            self.bubble_form.update_structure(
+                self.field_type.currentText(),
+                self.rows_spin.value(),
+                self.cols_spin.value(),
+            )
+            self.bubble_form.set_bubble_values(data.get("bubble_values"))
+            if self.field_type.currentText() == "mcq":
+                self.bubble_form.set_correct_answers(data.get("correct_answers"))
+        self.update_display()
+
+    def populate_fields_list(self):
+        self.field_select.blockSignals(True)
+        self.field_select.clear()
+        if "fields" in self.template_data and self.template_data["fields"]:
+            for name in self.template_data["fields"].keys():
+                self.field_select.addItem(name)
+        self.field_select.blockSignals(False)
+        if self.field_select.count() > 0:
+            self.field_select.setCurrentIndex(0)
+
+    def apply_form_to_template(self):
+        name = self.field_select.currentText() or self.field_name.text().strip()
+        if not name:
+            return
+        if "fields" not in self.template_data or name not in self.template_data["fields"]:
+            return
+        data = self.template_data["fields"][name]
+        data["type"] = self.field_type.currentText()
+        data["cols"] = self.cols_spin.value()
+        data["rows"] = self.rows_spin.value()
+        if hasattr(self, "bubble_form"):
+            vals = self.bubble_form.get_bubble_values()
+            if vals is not None:
+                data["bubble_values"] = vals
+            if self.field_type.currentText() == "mcq":
+                ans = self.bubble_form.get_correct_answers()
+                data["correct_answers"] = ans
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1336,12 +1473,18 @@ class TemplateCreator(QWidget):
             "rows": self.current_field["rows"],
             "bubbles": self.current_field["bubbles"],
         }
-        
-        if "bubble_values" in self.current_field:
-            field_data["bubble_values"] = self.current_field["bubble_values"]
-        
-        if "correct_answers" in self.current_field:
-            field_data["correct_answers"] = self.current_field["correct_answers"]
+        if hasattr(self, "bubble_form"):
+            vals = self.bubble_form.get_bubble_values()
+            if vals is not None:
+                field_data["bubble_values"] = vals
+            if self.current_field["type"] == "mcq":
+                ans = self.bubble_form.get_correct_answers()
+                field_data["correct_answers"] = ans
+        else:
+            if "bubble_values" in self.current_field:
+                field_data["bubble_values"] = self.current_field["bubble_values"]
+            if "correct_answers" in self.current_field:
+                field_data["correct_answers"] = self.current_field["correct_answers"]
         
         self.template_data["fields"][field_name] = field_data
 
@@ -1454,6 +1597,8 @@ class TemplateCreator(QWidget):
         self.image_label.setPixmap(pixmap)
 
     def save_template(self):
+        if hasattr(self, "bubble_form"):
+            self.apply_form_to_template()
         if not self.template_data["fields"]:
             QMessageBox.warning(self, "Warning", "No fields to save!")
             return
@@ -1473,6 +1618,9 @@ class TemplateCreator(QWidget):
         if file_path:
             with open(file_path, "r") as f:
                 self.template_data = json.load(f)
+            self.populate_fields_list()
+            if self.field_select.count() > 0:
+                self.on_field_selected(self.field_select.currentText())
             self.update_display()
             self.status_label.setText("Template loaded")
 
@@ -2729,4 +2877,4 @@ if __name__ == "__main__":
     
     window = OMRApplication()
     window.show()
-    sys.exit(app.exec_())   
+    sys.exit(app.exec_())
