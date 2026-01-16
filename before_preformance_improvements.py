@@ -8,8 +8,6 @@ import re
 import sys
 import traceback
 from pathlib import Path
-import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 import numpy as np
@@ -60,12 +58,11 @@ from pyzbar.pyzbar import decode
 class OMRProcessor:
     """Core logic for OMR processing - independent of PyQt5"""
 
-    def __init__(self, template_data, debug_mode=False, ocr_enabled=True, processing_mode="quality"):
+    def __init__(self, template_data, debug_mode=False, ocr_enabled=True):
         self.template = template_data
         self.debug_mode = debug_mode
         self.debug_images = []
         self.ocr_enabled = ocr_enabled
-        self.processing_mode = processing_mode
 
     def detect_barcode(self, image):
         """Detect and decode barcode from image"""
@@ -146,7 +143,6 @@ class OMRProcessor:
             # Try OCR with multiple PSM modes and images
             all_text = []
             psm_modes = [6, 7, 11, 12, 13]  # Different page segmentation modes
-            early_matches = []
 
             for psm in psm_modes:
                 # Try on preprocessed image
@@ -155,20 +151,6 @@ class OMRProcessor:
                     config=f"--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
                 )
                 all_text.append(text)
-                # Early pattern check on this result
-                pattern_early = r"[A-Z]\d{6,}"
-                matches_early = re.findall(pattern_early, text)
-                if matches_early:
-                    early_matches.extend(matches_early)
-                    if len(early_matches) >= 3:
-                        from collections import Counter
-
-                        code = Counter(early_matches).most_common(1)[0][0]
-                        if self.debug_mode:
-                            print(
-                                f"Code extracted: {code} (early from {len(early_matches)} matches)"
-                            )
-                        return code
 
                 # Try on resized only
                 text2 = pytesseract.image_to_string(
@@ -176,18 +158,6 @@ class OMRProcessor:
                     config=f"--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
                 )
                 all_text.append(text2)
-                matches_early2 = re.findall(pattern_early, text2)
-                if matches_early2:
-                    early_matches.extend(matches_early2)
-                    if len(early_matches) >= 3:
-                        from collections import Counter
-
-                        code = Counter(early_matches).most_common(1)[0][0]
-                        if self.debug_mode:
-                            print(
-                                f"Code extracted: {code} (early from {len(early_matches)} matches)"
-                            )
-                        return code
 
             # Also try on full image with specific config
             full_text = pytesseract.image_to_string(
@@ -292,17 +262,6 @@ class OMRProcessor:
                     config=f'--psm {psm}'
                 )
                 all_text.append(text)
-                # Early regex check on this text
-                matches = re.findall(pattern, text)
-                if matches:
-                    result = matches[0]
-                    if isinstance(result, tuple):
-                        result = result[0] if result else ""
-                    result = str(result).strip()
-                    
-                    if self.debug_mode:
-                        print(f"OCR matched with pattern '{pattern}' (early): {result}")
-                    return result
             
             # Combine results
             combined_text = '\n'.join(all_text)
@@ -342,10 +301,7 @@ class OMRProcessor:
         enhanced = clahe.apply(gray)
 
         # Denoise
-        if getattr(self, "processing_mode", "quality") == "fast":
-            denoised = cv2.medianBlur(enhanced, 3)
-        else:
-            denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
+        denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
 
         # Apply multiple thresholding methods
         # Method 1: Otsu's thresholding
@@ -617,11 +573,7 @@ class OMRProcessor:
     def process_pdf(self, pdf_path):
         """Process PDF file with multiple sheets"""
         try:
-            images = convert_from_path(
-                pdf_path,
-                dpi=300,
-                thread_count=os.cpu_count() or 4,
-            )
+            images = convert_from_path(pdf_path, dpi=300)
             results = []
 
             for i, img in enumerate(images):
@@ -647,133 +599,6 @@ class OMRProcessor:
 # ============================================================================
 # TEMPLATE CREATOR GUI
 # ============================================================================
-
-
-class BubbleConfigForm(QGroupBox):
-    """Form-based UI for configuring bubble values and MCQ answers"""
-
-    def __init__(self, parent=None):
-        super().__init__("Bubble Values / Answers Form", parent)
-        self.field_type = "grid"
-        self.rows = 10
-        self.cols = 1
-
-        layout = QVBoxLayout()
-
-        self.tabs = QTabWidget()
-
-        # Bubble values tab
-        self.values_table = QTableWidget()
-        self.values_table.setEditTriggers(QTableWidget.AllEditTriggers)
-        self.values_table.horizontalHeader().setStretchLastSection(True)
-        self.values_table.verticalHeader().setVisible(True)
-        values_widget = QWidget()
-        values_layout = QVBoxLayout()
-        values_layout.setContentsMargins(0, 0, 0, 0)
-        values_layout.addWidget(self.values_table)
-        values_widget.setLayout(values_layout)
-        self.tabs.addTab(values_widget, "Bubble Values")
-
-        # MCQ answers tab
-        self.answers_table = QTableWidget()
-        self.answers_table.setEditTriggers(QTableWidget.AllEditTriggers)
-        self.answers_table.horizontalHeader().setStretchLastSection(True)
-        self.answers_table.verticalHeader().setVisible(True)
-        answers_widget = QWidget()
-        answers_layout = QVBoxLayout()
-        answers_layout.setContentsMargins(0, 0, 0, 0)
-        answers_layout.addWidget(self.answers_table)
-        answers_widget.setLayout(answers_layout)
-        self.tabs.addTab(answers_widget, "MCQ Answers")
-
-        layout.addWidget(self.tabs)
-        self.setLayout(layout)
-
-        # Initialize with default structure
-        self.update_structure(self.field_type, self.rows, self.cols)
-
-    def update_structure(self, field_type, rows, cols):
-        """Update tables based on field type and dimensions."""
-        self.field_type = field_type
-        self.rows = max(1, rows)
-        self.cols = max(1, cols)
-
-        self._build_values_table()
-        self._build_answers_table()
-
-    def _build_values_table(self):
-        self.values_table.clear()
-
-        if self.field_type in ["horizontal", "mcq"]:
-            self.values_table.setRowCount(1)
-            self.values_table.setColumnCount(self.cols)
-            headers = [f"Col {c + 1}" for c in range(self.cols)]
-            self.values_table.setHorizontalHeaderLabels(headers)
-        else:
-            self.values_table.setRowCount(self.rows)
-            self.values_table.setColumnCount(1)
-            self.values_table.setHorizontalHeaderLabels(["Row Value"])
-            self.values_table.setVerticalHeaderLabels([str(r) for r in range(self.rows)])
-
-    def _build_answers_table(self):
-        self.answers_table.clear()
-
-        if self.field_type == "mcq":
-            self.answers_table.setRowCount(self.rows)
-            self.answers_table.setColumnCount(1)
-            self.answers_table.setHorizontalHeaderLabels(["Correct Answer"])
-            self.answers_table.setVerticalHeaderLabels([f"Q{r + 1}" for r in range(self.rows)])
-            self.tabs.setTabEnabled(1, True)
-        else:
-            self.answers_table.setRowCount(0)
-            self.answers_table.setColumnCount(0)
-            self.tabs.setTabEnabled(1, False)
-
-    def get_bubble_values(self):
-        """Collect bubble values from the table.
-
-        Returns a list of non-empty values or None if nothing is filled.
-        For horizontal/mcq: values are mapped by column.
-        For grid/other: values are mapped by row.
-        """
-        values = []
-
-        if self.field_type in ["horizontal", "mcq"]:
-            for c in range(self.cols):
-                item = self.values_table.item(0, c)
-                text = item.text().strip() if item else ""
-                values.append(text)
-        else:
-            for r in range(self.rows):
-                item = self.values_table.item(r, 0)
-                text = item.text().strip() if item else ""
-                values.append(text)
-
-        # Trim trailing empty entries (treated as using defaults)
-        while values and not values[-1]:
-            values.pop()
-
-        return values if values else None
-
-    def get_correct_answers(self):
-        """Collect MCQ correct answers from the table.
-
-        Returns a list of answer labels (uppercased). Empty cells become ''.
-        """
-        if self.field_type != "mcq":
-            return []
-
-        answers = []
-        for r in range(self.rows):
-            item = self.answers_table.item(r, 0)
-            text = item.text().strip().upper() if item else ""
-            answers.append(text)
-
-        # Trim trailing empty entries
-        while answers and not answers[-1]:
-            answers.pop()
-
-        return answers
 
 
 class TemplateCreator(QWidget):
@@ -813,7 +638,7 @@ class TemplateCreator(QWidget):
 
         self.toggle_controls_btn = QPushButton("Hide Controls")
         self.toggle_controls_btn.setToolTip("Hide/Show control panel for more image space")
-        self.toggle_controls_btn.setMinimumHeight(38)
+        self.toggle_controls_btn.setMinimumHeight(28)
         self.toggle_controls_btn.setCheckable(True)
         self.toggle_controls_btn.setChecked(False)
         self.toggle_controls_btn.clicked.connect(self.toggle_controls)
@@ -918,6 +743,11 @@ class TemplateCreator(QWidget):
         gap_layout.addStretch()
         field_layout.addRow("", gap_layout)
 
+        self.correct_answers = QLineEdit()
+        self.correct_answers.setPlaceholderText("A,B,C,D (MCQ)")
+        self.correct_answers.setMinimumHeight(32)
+        field_layout.addRow("Answers:", self.correct_answers)
+
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
 
@@ -946,13 +776,6 @@ class TemplateCreator(QWidget):
         self.field_config_container = QWidget()
         field_config_container_layout = QVBoxLayout()
         field_config_container_layout.addWidget(field_config)
-
-        # Form-based bubble/answer configuration (in its own internal tabs)
-        self.bubble_form = BubbleConfigForm(self)
-        self.cols_spin.valueChanged.connect(self.on_dimensions_changed)
-        self.rows_spin.valueChanged.connect(self.on_dimensions_changed)
-        field_config_container_layout.addWidget(self.bubble_form)
-
         self.field_config_container.setLayout(field_config_container_layout)
         main_layout.addWidget(self.field_config_container)
 
@@ -981,35 +804,34 @@ class TemplateCreator(QWidget):
         self.field_config_container.setVisible(not hidden)
         self.toggle_controls_btn.setText("Show Controls" if hidden else "Hide Controls")
 
+    def keyPressEvent(self, event):
+        if event.key() == 16777220 or event.key() == 16777221:  # Return/Enter keys
+            if self.current_field is not None and self.field_rect is not None:
+                field_type = self.current_field["type"]
+                if field_type in ["grid", "horizontal", "mcq"]:
+                    # Confirm rectangle (green)
+                    field_name = self.current_field["name"]
+                    self.save_current_field()
+                    self.field_confirmed = True
+                    self.update_display()
+                    self.status_label.setText(f"Rectangle confirmed (green). Field '{field_name}' created! Rectangle is still draggable/resizable.")
+        super().keyPressEvent(event)
+
     def on_type_changed(self, type_name):
-        """Handle changes to the field type and update form + controls."""
         if type_name == "horizontal":
             self.rows_spin.setValue(1)
             self.rows_spin.setEnabled(False)
             self.cols_spin.setEnabled(True)
+            self.correct_answers.setEnabled(False)
         elif type_name == "mcq":
             self.cols_spin.setValue(4)
             self.cols_spin.setEnabled(True)
             self.rows_spin.setEnabled(True)
+            self.correct_answers.setEnabled(True)
         else:
             self.rows_spin.setEnabled(True)
             self.cols_spin.setEnabled(True)
-
-        if hasattr(self, "bubble_form"):
-            self.bubble_form.update_structure(
-                type_name,
-                self.rows_spin.value(),
-                self.cols_spin.value(),
-            )
-
-    def on_dimensions_changed(self, value=None):
-        """Keep BubbleConfigForm in sync when rows/cols spin boxes change."""
-        if hasattr(self, "bubble_form"):
-            self.bubble_form.update_structure(
-                self.field_type.currentText(),
-                self.rows_spin.value(),
-                self.cols_spin.value(),
-            )
+            self.correct_answers.setEnabled(False)
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1023,9 +845,7 @@ class TemplateCreator(QWidget):
             self.image = pixmap
             self.template_data["image_size"] = (self.image.width(), self.image.height())
             self.update_display()
-            self.status_label.setText(
-                f"Image loaded: {self.image.width()} x {self.image.height()} pixels. Configure and add fields."
-            )
+            self.status_label.setText(f"Image loaded: {self.image.width()} x {self.image.height()} pixels. Configure and add fields.")
 
     def start_field(self):
         if self.image is None:
@@ -1050,19 +870,12 @@ class TemplateCreator(QWidget):
             "bubbles": [],
         }
         
-        if hasattr(self, "bubble_form"):
-            self.bubble_form.update_structure(
-                field_type,
-                self.rows_spin.value(),
-                self.cols_spin.value(),
-            )
-            bubble_values = self.bubble_form.get_bubble_values()
-            if bubble_values:
-                self.current_field["bubble_values"] = bubble_values
-
-            if field_type == "mcq":
-                correct_answers = self.bubble_form.get_correct_answers()
-                self.current_field["correct_answers"] = correct_answers
+        if field_type == "mcq":
+            correct_answers = self.correct_answers.text().strip().upper()
+            if correct_answers:
+                self.current_field["correct_answers"] = [ans.strip() for ans in correct_answers.split(",")]
+            else:
+                self.current_field["correct_answers"] = []
         
         self.bubbles = []
         self.field_rect = None
@@ -1239,32 +1052,6 @@ class TemplateCreator(QWidget):
         radius = max(5, min(radius, 50))
         self.radius_spin.setValue(radius)
 
-    def get_bubble_value(self, field_type, col, row):
-        """Return bubble value based on field type and optional custom values.
-
-        - For horizontal and MCQ fields, custom values are mapped by column.
-        - For grid/other fields, custom values are mapped by row.
-        - If no custom value is defined for a position, fall back to existing defaults.
-        """
-        bubble_values = None
-        if self.current_field is not None:
-            bubble_values = self.current_field.get("bubble_values")
-
-        if bubble_values:
-            if field_type in ["horizontal", "mcq"]:
-                if col < len(bubble_values):
-                    return bubble_values[col]
-            else:
-                if row < len(bubble_values):
-                    return bubble_values[row]
-
-        if field_type == "horizontal":
-            return col + 1
-        elif field_type == "mcq":
-            return chr(65 + col)
-        else:
-            return row
-
     def generate_bubbles_from_position(self, start_x, start_y):
         cols = self.current_field["cols"]
         rows = self.current_field["rows"]
@@ -1277,7 +1064,13 @@ class TemplateCreator(QWidget):
             for row in range(rows):
                 x = start_x + (col * col_gap)
                 y = start_y + (row * row_gap)
-                value = self.get_bubble_value(field_type, col, row)
+
+                if field_type == "horizontal":
+                    value = col + 1
+                elif field_type == "mcq":
+                    value = chr(65 + col)
+                else:
+                    value = row
 
                 bubble = {
                     "x": x,
@@ -1314,7 +1107,13 @@ class TemplateCreator(QWidget):
                 # Center bubble in its cell
                 x = start_x + (col * col_gap) + (col_gap // 2)
                 y = start_y + (row * row_gap) + (row_gap // 2)
-                value = self.get_bubble_value(field_type, col, row)
+
+                if field_type == "horizontal":
+                    value = col + 1
+                elif field_type == "mcq":
+                    value = chr(65 + col)  # A, B, C, D based on column
+                else:
+                    value = row
 
                 bubble = {
                     "x": x,
@@ -1336,9 +1135,6 @@ class TemplateCreator(QWidget):
             "rows": self.current_field["rows"],
             "bubbles": self.current_field["bubbles"],
         }
-        
-        if "bubble_values" in self.current_field:
-            field_data["bubble_values"] = self.current_field["bubble_values"]
         
         if "correct_answers" in self.current_field:
             field_data["correct_answers"] = self.current_field["correct_answers"]
@@ -1489,11 +1285,9 @@ class SheetProcessor(QWidget):
         super().__init__()
         self.template_path = None
         self.processor = None
-        self.template_data = None
         self.results = []
         self.debug_mode = False
         self.ocr_enabled = True
-        self.processing_mode = "quality"
         self.init_ui()
 
     def init_ui(self):
@@ -1514,7 +1308,7 @@ class SheetProcessor(QWidget):
         self.toggle_controls_btn.setToolTip(
             "Hide/Show top controls for more space to view/edit results"
         )
-        self.toggle_controls_btn.setMinimumHeight(38)
+        self.toggle_controls_btn.setMinimumHeight(28)
         self.toggle_controls_btn.setCheckable(True)
         self.toggle_controls_btn.setChecked(False)
         self.toggle_controls_btn.clicked.connect(self.toggle_controls)
@@ -1581,16 +1375,6 @@ class SheetProcessor(QWidget):
         self.ocr_checkbox.setToolTip("Enable OCR for extracting text from specified regions")
         self.ocr_checkbox.stateChanged.connect(self.toggle_ocr)
         options_layout.addWidget(self.ocr_checkbox)
-
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["High Quality", "Fast"])
-        self.mode_combo.setCurrentIndex(0)
-        self.mode_combo.setMaximumWidth(150)
-        self.mode_combo.setToolTip(
-            "Select processing mode: High Quality (slower) or Fast (quicker)"
-        )
-        self.mode_combo.currentIndexChanged.connect(self.change_processing_mode)
-        options_layout.addWidget(self.mode_combo)
 
         load_ocr_btn = QPushButton("📥 Load OCR Fields")
         load_ocr_btn.setStyleSheet(
@@ -1660,14 +1444,6 @@ class SheetProcessor(QWidget):
         if self.processor:
             self.processor.ocr_enabled = self.ocr_enabled
 
-    def change_processing_mode(self, index):
-        if index == 1:
-            self.processing_mode = "fast"
-        else:
-            self.processing_mode = "quality"
-        if self.processor:
-            self.processor.processing_mode = self.processing_mode
-
     def load_template(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Template", "", "JSON Files (*.json)"
@@ -1676,12 +1452,10 @@ class SheetProcessor(QWidget):
             try:
                 with open(file_path, "r") as f:
                     template_data = json.load(f)
-                self.template_data = template_data
                 self.processor = OMRProcessor(
                     template_data, 
                     debug_mode=self.debug_mode,
-                    ocr_enabled=self.ocr_enabled,
-                    processing_mode=self.processing_mode,
+                    ocr_enabled=self.ocr_enabled
                 )
                 self.template_path = file_path
                 self.status_label.setText(f"Template loaded: {Path(file_path).name}")
@@ -1728,11 +1502,8 @@ class SheetProcessor(QWidget):
                 QApplication.processEvents()
 
                 # Get number of pages first
-                images = convert_from_path(
-                    file_path,
-                    dpi=300,
-                    thread_count=os.cpu_count() or 4,
-                )
+                from pdf2image import convert_from_path
+                images = convert_from_path(file_path, dpi=300)
                 total_pages = len(images)
 
                 self.progress_bar.setMaximum(total_pages)
@@ -1780,44 +1551,17 @@ class SheetProcessor(QWidget):
                 QApplication.processEvents()
 
                 self.results = []
+                for i, path in enumerate(file_paths):
+                    result = self.processor.process_sheet(
+                        path, save_debug=self.debug_mode
+                    )
+                    result["sheet_number"] = i + 1
+                    result["file_name"] = Path(path).name
+                    self.results.append(result)
 
-                if len(file_paths) > 1:
-                    args_list = [
-                        (
-                            path,
-                            self.template_data,
-                            self.debug_mode,
-                            self.ocr_enabled,
-                            self.processing_mode,
-                        )
-                        for path in file_paths
-                    ]
-
-                    max_workers = os.cpu_count() or 2
-                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                        for i, result in enumerate(executor.map(_process_image_worker, args_list)):
-                            result["sheet_number"] = i + 1
-                            self.results.append(result)
-
-                            self.progress_bar.setValue(i + 1)
-                            self.status_label.setText(
-                                f"Processing image {i + 1} of {len(file_paths)}..."
-                            )
-                            QApplication.processEvents()
-                else:
-                    for i, path in enumerate(file_paths):
-                        result = self.processor.process_sheet(
-                            path, save_debug=self.debug_mode
-                        )
-                        result["sheet_number"] = i + 1
-                        result["file_name"] = Path(path).name
-                        self.results.append(result)
-
-                        self.progress_bar.setValue(i + 1)
-                        self.status_label.setText(
-                            f"Processing image {i + 1} of {len(file_paths)}..."
-                        )
-                        QApplication.processEvents()
+                    self.progress_bar.setValue(i + 1)
+                    self.status_label.setText(f"Processing image {i + 1} of {len(file_paths)}...")
+                    QApplication.processEvents()
 
                 self.display_results()
                 self.progress_bar.setVisible(False)
@@ -2729,4 +2473,4 @@ if __name__ == "__main__":
     
     window = OMRApplication()
     window.show()
-    sys.exit(app.exec_())   
+    sys.exit(app.exec_())
