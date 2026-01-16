@@ -19,12 +19,14 @@ pytesseract.pytesseract.tesseract_cmd = (
 )
 from pdf2image import convert_from_path
 from PyQt5.QtCore import QPoint, QRect, Qt
-from PyQt5.QtGui import QColor, QBrush, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QIcon, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -32,9 +34,13 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QSplitter,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -618,105 +624,185 @@ class TemplateCreator(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
-        # Controls
+        header_layout = QHBoxLayout()
+        
+        header = QLabel("Template Creator")
+        header.setStyleSheet("font-size: 14px; font-weight: bold; color: #0d6efd;")
+        header_layout.addWidget(header)
+
+        header_layout.addStretch()
+
+        self.toggle_controls_btn = QPushButton("Hide Controls")
+        self.toggle_controls_btn.setToolTip("Hide/Show control panel for more image space")
+        self.toggle_controls_btn.setMinimumHeight(28)
+        self.toggle_controls_btn.setCheckable(True)
+        self.toggle_controls_btn.setChecked(False)
+        self.toggle_controls_btn.clicked.connect(self.toggle_controls)
+        header_layout.addWidget(self.toggle_controls_btn)
+
+        main_layout.addLayout(header_layout)
+
+        self.controls_container = QWidget()
+
         controls = QHBoxLayout()
+        controls.setSpacing(8)
 
-        load_btn = QPushButton("Load Reference Image")
+        load_btn = QPushButton("Load Reference")
+        load_btn.setToolTip("Load a reference image to create the OMR template")
+        load_btn.setMinimumHeight(32)
         load_btn.clicked.connect(self.load_image)
         controls.addWidget(load_btn)
 
         save_btn = QPushButton("Save Template")
+        save_btn.setToolTip("Save the current template to a JSON file")
+        save_btn.setMinimumHeight(32)
         save_btn.clicked.connect(self.save_template)
         controls.addWidget(save_btn)
 
         load_template_btn = QPushButton("Load Template")
+        load_template_btn.setToolTip("Load an existing template from a JSON file")
+        load_template_btn.setMinimumHeight(32)
         load_template_btn.clicked.connect(self.load_template)
         controls.addWidget(load_template_btn)
 
-        layout.addLayout(controls)
+        controls.addStretch()
+        self.controls_container.setLayout(controls)
+        main_layout.addWidget(self.controls_container)
 
-        # Field configuration
-        field_config = QGroupBox("Add Field")
-        field_layout = QGridLayout()
+        self.field_config_container = QWidget()
 
-        field_layout.addWidget(QLabel("Field Name:"), 0, 0)
+        field_config = QGroupBox("Field Configuration")
+        field_layout = QFormLayout()
+        field_layout.setSpacing(8)
+        field_layout.setLabelAlignment(Qt.AlignRight)
+
         self.field_name = QLineEdit()
-        field_layout.addWidget(self.field_name, 0, 1)
+        self.field_name.setPlaceholderText("e.g., Register Number")
+        self.field_name.setMinimumHeight(32)
+        field_layout.addRow("Name:", self.field_name)
 
-        field_layout.addWidget(QLabel("Type:"), 1, 0)
         self.field_type = QComboBox()
         self.field_type.addItems(["horizontal", "grid", "mcq"])
+        self.field_type.setMinimumHeight(32)
         self.field_type.currentTextChanged.connect(self.on_type_changed)
-        field_layout.addWidget(self.field_type, 1, 1)
+        field_layout.addRow("Type:", self.field_type)
 
-        field_layout.addWidget(QLabel("Columns:"), 2, 0)
+        spin_layout = QHBoxLayout()
+        spin_layout.setSpacing(10)
+        
         self.cols_spin = QSpinBox()
         self.cols_spin.setRange(1, 20)
         self.cols_spin.setValue(1)
-        field_layout.addWidget(self.cols_spin, 2, 1)
+        self.cols_spin.setMinimumHeight(32)
+        self.cols_spin.setMinimumWidth(80)
+        spin_layout.addWidget(QLabel("Cols:"))
+        spin_layout.addWidget(self.cols_spin)
 
-        field_layout.addWidget(QLabel("Rows:"), 3, 0)
         self.rows_spin = QSpinBox()
         self.rows_spin.setRange(1, 20)
         self.rows_spin.setValue(10)
-        field_layout.addWidget(self.rows_spin, 3, 1)
+        self.rows_spin.setMinimumHeight(32)
+        self.rows_spin.setMinimumWidth(80)
+        spin_layout.addWidget(QLabel("Rows:"))
+        spin_layout.addWidget(self.rows_spin)
+        
+        field_layout.addRow("", spin_layout)
 
-        field_layout.addWidget(QLabel("Bubble Radius:"), 4, 0)
+        gap_layout = QHBoxLayout()
+        gap_layout.setSpacing(10)
+        
         self.radius_spin = QSpinBox()
         self.radius_spin.setRange(5, 50)
         self.radius_spin.setValue(15)
-        field_layout.addWidget(self.radius_spin, 4, 1)
+        self.radius_spin.setMinimumHeight(32)
+        self.radius_spin.setMinimumWidth(80)
+        gap_layout.addWidget(QLabel("Radius:"))
+        gap_layout.addWidget(self.radius_spin)
 
-        field_layout.addWidget(QLabel("Row Gap (pixels):"), 5, 0)
         self.row_gap_spin = QSpinBox()
         self.row_gap_spin.setRange(10, 200)
         self.row_gap_spin.setValue(40)
-        field_layout.addWidget(self.row_gap_spin, 5, 1)
+        self.row_gap_spin.setMinimumHeight(32)
+        self.row_gap_spin.setMinimumWidth(80)
+        gap_layout.addWidget(QLabel("Row Gap:"))
+        gap_layout.addWidget(self.row_gap_spin)
 
-        field_layout.addWidget(QLabel("Column Gap (pixels):"), 6, 0)
         self.col_gap_spin = QSpinBox()
         self.col_gap_spin.setRange(10, 200)
         self.col_gap_spin.setValue(50)
-        field_layout.addWidget(self.col_gap_spin, 6, 1)
+        self.col_gap_spin.setMinimumHeight(32)
+        self.col_gap_spin.setMinimumWidth(80)
+        gap_layout.addWidget(QLabel("Col Gap:"))
+        gap_layout.addWidget(self.col_gap_spin)
+        
+        gap_layout.addStretch()
+        field_layout.addRow("", gap_layout)
 
-        field_layout.addWidget(QLabel("Correct Answers (MCQ only):"), 7, 0)
         self.correct_answers = QLineEdit()
-        self.correct_answers.setPlaceholderText("e.g., A,B,C,D,A,B,C,D (comma-separated)")
-        field_layout.addWidget(self.correct_answers, 7, 1)
+        self.correct_answers.setPlaceholderText("A,B,C,D (MCQ)")
+        self.correct_answers.setMinimumHeight(32)
+        field_layout.addRow("Answers:", self.correct_answers)
 
-        start_field_btn = QPushButton("Click First Bubble Position")
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(8)
+
+        start_field_btn = QPushButton("Create Field")
+        start_field_btn.setToolTip("Start creating a new field by clicking on the image")
+        start_field_btn.setMinimumHeight(35)
         start_field_btn.clicked.connect(self.start_field)
-        field_layout.addWidget(start_field_btn, 8, 0, 1, 2)
+        button_layout.addWidget(start_field_btn)
 
-        clear_field_btn = QPushButton("Clear Current Field")
+        clear_field_btn = QPushButton("Clear Field")
+        clear_field_btn.setToolTip("Clear the current field being created")
+        clear_field_btn.setMinimumHeight(35)
         clear_field_btn.clicked.connect(self.clear_field)
-        field_layout.addWidget(clear_field_btn, 9, 0, 1, 2)
+        button_layout.addWidget(clear_field_btn)
 
-        confirm_rect_btn = QPushButton("Confirm Rectangle (Enter)")
+        confirm_rect_btn = QPushButton("Confirm (Enter)")
+        confirm_rect_btn.setToolTip("Confirm the selected rectangle area (or press Enter)")
+        confirm_rect_btn.setMinimumHeight(35)
         confirm_rect_btn.clicked.connect(self.confirm_rectangle)
-        field_layout.addWidget(confirm_rect_btn, 10, 0, 1, 2)
+        button_layout.addWidget(confirm_rect_btn)
+
+        field_layout.addRow("", button_layout)
 
         field_config.setLayout(field_layout)
-        layout.addWidget(field_config)
+        
+        self.field_config_container = QWidget()
+        field_config_container_layout = QVBoxLayout()
+        field_config_container_layout.addWidget(field_config)
+        self.field_config_container.setLayout(field_config_container_layout)
+        main_layout.addWidget(self.field_config_container)
 
-        # Image display
         self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea { border: 2px dashed #dee2e6; border-radius: 8px; background-color: #f8f9fa; }")
+        
         self.image_label = QLabel()
         self.image_label.setMouseTracking(True)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background-color: #f8f9fa; border-radius: 6px;")
         self.image_label.mousePressEvent = self.on_image_click
         self.image_label.mouseMoveEvent = self.on_image_move
         self.image_label.mouseReleaseEvent = self.on_image_release
         self.scroll.setWidget(self.image_label)
-        self.scroll.setWidgetResizable(True)
-        layout.addWidget(self.scroll)
+        main_layout.addWidget(self.scroll, 1)
 
-        # Status
-        self.status_label = QLabel("Load an image to start")
-        layout.addWidget(self.status_label)
+        self.status_label = QLabel("Load an image to start creating your template")
+        self.status_label.setStyleSheet("color: #6c757d; font-style: italic; padding: 8px; background-color: #f8f9fa; border-radius: 6px;")
+        main_layout.addWidget(self.status_label)
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
+
+    def toggle_controls(self):
+        hidden = self.toggle_controls_btn.isChecked()
+        self.controls_container.setVisible(not hidden)
+        self.field_config_container.setVisible(not hidden)
+        self.toggle_controls_btn.setText("Show Controls" if hidden else "Hide Controls")
 
     def keyPressEvent(self, event):
         if event.key() == 16777220 or event.key() == 16777221:  # Return/Enter keys
@@ -752,10 +838,14 @@ class TemplateCreator(QWidget):
             self, "Load Image", "", "Images (*.png *.jpg *.jpeg)"
         )
         if file_path:
-            self.image = QPixmap(file_path)
+            pixmap = QPixmap(file_path)
+            if pixmap.isNull():
+                QMessageBox.warning(self, "Error", "Failed to load image!")
+                return
+            self.image = pixmap
             self.template_data["image_size"] = (self.image.width(), self.image.height())
             self.update_display()
-            self.status_label.setText("Image loaded. Configure and add fields.")
+            self.status_label.setText(f"Image loaded: {self.image.width()} x {self.image.height()} pixels. Configure and add fields.")
 
     def start_field(self):
         if self.image is None:
@@ -1158,6 +1248,7 @@ class TemplateCreator(QWidget):
 
         painter.end()
         self.image_label.setPixmap(pixmap)
+        self.image_label.adjustSize()
 
     def save_template(self):
         if not self.template_data["fields"]:
@@ -1202,51 +1293,99 @@ class SheetProcessor(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
 
-        # Controls
-        controls = QHBoxLayout()
+        header = QLabel("📊 Sheet Processor")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #0d6efd; margin-bottom: 5px;")
+        layout.addWidget(header)
 
-        load_template_btn = QPushButton("Load Template")
+        subheader = QLabel("Process scanned OMR sheets and export results")
+        subheader.setStyleSheet("color: #6c757d; font-size: 13px; margin-bottom: 10px;")
+        layout.addWidget(subheader)
+
+        separator = QLabel()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #dee2e6;")
+        layout.addWidget(separator)
+
+        controls = QGridLayout()
+        controls.setSpacing(12)
+
+        row = 0
+        load_template_btn = QPushButton("📁 Load Template")
+        load_template_btn.setToolTip("Load an OMR template file (.json)")
+        load_template_btn.setMinimumHeight(40)
         load_template_btn.clicked.connect(self.load_template)
-        controls.addWidget(load_template_btn)
+        controls.addWidget(load_template_btn, row, 0)
 
-        process_pdf_btn = QPushButton("Process PDF")
+        process_pdf_btn = QPushButton("📄 Process PDF")
+        process_pdf_btn.setToolTip("Process a PDF file containing OMR sheets")
+        process_pdf_btn.setMinimumHeight(40)
         process_pdf_btn.clicked.connect(self.process_pdf)
-        controls.addWidget(process_pdf_btn)
+        controls.addWidget(process_pdf_btn, row, 1)
+        row += 1
 
-        process_images_btn = QPushButton("Process Images")
+        process_images_btn = QPushButton("🖼️ Process Images")
+        process_images_btn.setToolTip("Process multiple image files (.png, .jpg, .jpeg)")
+        process_images_btn.setMinimumHeight(40)
         process_images_btn.clicked.connect(self.process_images)
-        controls.addWidget(process_images_btn)
+        controls.addWidget(process_images_btn, row, 0)
 
-        # Debug mode checkbox
-        from PyQt5.QtWidgets import QCheckBox
-
-        self.debug_checkbox = QCheckBox("Debug Mode (slower)")
-        self.debug_checkbox.stateChanged.connect(self.toggle_debug)
-        controls.addWidget(self.debug_checkbox)
-
-        # OCR enable checkbox
-        self.ocr_checkbox = QCheckBox("Enable OCR")
-        self.ocr_checkbox.setChecked(True)
-        self.ocr_checkbox.stateChanged.connect(self.toggle_ocr)
-        controls.addWidget(self.ocr_checkbox)
-
-        load_ocr_btn = QPushButton("Load OCR Fields")
-        load_ocr_btn.clicked.connect(self.load_ocr_fields)
-        controls.addWidget(load_ocr_btn)
-
-        export_btn = QPushButton("Export to Excel")
+        export_btn = QPushButton("📊 Export to Excel")
+        export_btn.setToolTip("Export processing results to Excel file")
+        export_btn.setMinimumHeight(40)
         export_btn.clicked.connect(self.export_excel)
-        controls.addWidget(export_btn)
+        controls.addWidget(export_btn, row, 1)
+        row += 1
+
+        options_frame = QFrame()
+        options_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 10px;")
+        options_layout = QHBoxLayout()
+        options_layout.setContentsMargins(5, 5, 5, 5)
+        options_layout.setSpacing(20)
+
+        self.debug_checkbox = QCheckBox("🐛 Debug Mode")
+        self.debug_checkbox.setToolTip("Enable debug mode to save intermediate processing images")
+        self.debug_checkbox.stateChanged.connect(self.toggle_debug)
+        options_layout.addWidget(self.debug_checkbox)
+
+        self.ocr_checkbox = QCheckBox("🔤 Enable OCR")
+        self.ocr_checkbox.setChecked(True)
+        self.ocr_checkbox.setToolTip("Enable OCR for extracting text from specified regions")
+        self.ocr_checkbox.stateChanged.connect(self.toggle_ocr)
+        options_layout.addWidget(self.ocr_checkbox)
+
+        load_ocr_btn = QPushButton("📥 Load OCR Fields")
+        load_ocr_btn.setToolTip("Load OCR field configuration (.json)")
+        load_ocr_btn.setMaximumWidth(150)
+        load_ocr_btn.clicked.connect(self.load_ocr_fields)
+        options_layout.addWidget(load_ocr_btn)
+
+        options_layout.addStretch()
+        options_frame.setLayout(options_layout)
+        controls.addWidget(options_frame, row, 0, 1, 2)
+        row += 1
 
         layout.addLayout(controls)
 
-        # Status
-        self.status_label = QLabel("Load a template to start")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("QProgressBar { height: 25px; }")
+        layout.addWidget(self.progress_bar)
+
+        self.status_label = QLabel("Load a template to start processing")
+        self.status_label.setStyleSheet("color: #6c757d; font-style: italic; padding: 8px; background-color: #f8f9fa; border-radius: 6px;")
         layout.addWidget(self.status_label)
 
-        # Results table
+        results_label = QLabel("📋 Processing Results")
+        results_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #495057; margin-top: 10px;")
+        layout.addWidget(results_label)
+
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("QTableWidget { gridline-color: #dee2e6; }")
+        self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
 
         self.setLayout(layout)
@@ -1314,12 +1453,36 @@ class SheetProcessor(QWidget):
         if file_path:
             try:
                 self.status_label.setText("Processing PDF...")
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setValue(0)
                 QApplication.processEvents()
 
-                self.results = self.processor.process_pdf(file_path)
+                # Get number of pages first
+                from pdf2image import convert_from_path
+                images = convert_from_path(file_path, dpi=300)
+                total_pages = len(images)
+
+                self.progress_bar.setMaximum(total_pages)
+                self.results = []
+
+                for i, img in enumerate(images):
+                    # Convert PIL image to OpenCV format
+                    img_array = np.array(img)
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+                    sheet_result = self.processor.process_sheet(img_bgr)
+                    sheet_result["sheet_number"] = i + 1
+                    self.results.append(sheet_result)
+
+                    self.progress_bar.setValue(i + 1)
+                    self.status_label.setText(f"Processing page {i + 1} of {total_pages}...")
+                    QApplication.processEvents()
+
                 self.display_results()
-                self.status_label.setText(f"Processed {len(self.results)} sheets")
+                self.progress_bar.setVisible(False)
+                self.status_label.setText(f"Successfully processed {len(self.results)} sheets from PDF")
             except Exception as e:
+                self.progress_bar.setVisible(False)
                 QMessageBox.critical(
                     self,
                     "Error",
@@ -1338,6 +1501,9 @@ class SheetProcessor(QWidget):
         if file_paths:
             try:
                 self.status_label.setText("Processing images...")
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setMaximum(len(file_paths))
+                self.progress_bar.setValue(0)
                 QApplication.processEvents()
 
                 self.results = []
@@ -1349,12 +1515,18 @@ class SheetProcessor(QWidget):
                     result["file_name"] = Path(path).name
                     self.results.append(result)
 
+                    self.progress_bar.setValue(i + 1)
+                    self.status_label.setText(f"Processing image {i + 1} of {len(file_paths)}...")
+                    QApplication.processEvents()
+
                 self.display_results()
-                msg = f"Processed {len(self.results)} images"
+                self.progress_bar.setVisible(False)
+                msg = f"Successfully processed {len(self.results)} images"
                 if self.debug_mode:
                     msg += "\nDebug images saved to 'debug_output' folder"
                 self.status_label.setText(msg)
             except Exception as e:
+                self.progress_bar.setVisible(False)
                 QMessageBox.critical(
                     self,
                     "Error",
@@ -1437,93 +1609,154 @@ class OCRConfigWidget(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
-        # Controls
+        header = QLabel("OCR Configuration")
+        header.setStyleSheet("font-size: 14px; font-weight: bold; color: #0d6efd;")
+        main_layout.addWidget(header)
+
         controls = QHBoxLayout()
+        controls.setSpacing(8)
 
-        load_btn = QPushButton("Load Reference Image")
+        load_btn = QPushButton("Load Reference")
+        load_btn.setToolTip("Load a reference image to define OCR regions")
+        load_btn.setMinimumHeight(32)
         load_btn.clicked.connect(self.load_image)
         controls.addWidget(load_btn)
 
-        add_ocr_btn = QPushButton("Add OCR Field")
+        add_ocr_btn = QPushButton("Add Field")
+        add_ocr_btn.setToolTip("Add a new OCR field with regex pattern")
+        add_ocr_btn.setMinimumHeight(32)
         add_ocr_btn.clicked.connect(self.add_ocr_field)
         controls.addWidget(add_ocr_btn)
 
-        save_btn = QPushButton("Save OCR Fields")
+        save_btn = QPushButton("Save Fields")
+        save_btn.setToolTip("Save OCR field configuration to JSON file")
+        save_btn.setMinimumHeight(32)
         save_btn.clicked.connect(self.save_ocr_fields)
         controls.addWidget(save_btn)
 
-        load_ocr_btn = QPushButton("Load OCR Fields")
+        load_ocr_btn = QPushButton("Load Fields")
+        load_ocr_btn.setToolTip("Load OCR field configuration from JSON file")
+        load_ocr_btn.setMinimumHeight(32)
         load_ocr_btn.clicked.connect(self.load_ocr_fields)
         controls.addWidget(load_ocr_btn)
 
-        clear_rect_btn = QPushButton("Clear Current Rectangle")
+        clear_rect_btn = QPushButton("Clear Rect")
+        clear_rect_btn.setToolTip("Clear the current rectangle selection")
+        clear_rect_btn.setMinimumHeight(32)
         clear_rect_btn.clicked.connect(self.clear_current_rect)
         controls.addWidget(clear_rect_btn)
 
-        layout.addLayout(controls)
+        controls.addStretch()
+        main_layout.addLayout(controls)
 
-        # OCR fields list
+        content_splitter = QSplitter(Qt.Horizontal)
+
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        ocr_fields_label = QLabel("OCR Fields")
+        ocr_fields_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #495057;")
+        left_layout.addWidget(ocr_fields_label)
+
         self.ocr_fields_list = QListWidget()
+        self.ocr_fields_list.setMaximumHeight(120)
+        self.ocr_fields_list.setStyleSheet("QListWidget { font-size: 11px; }")
         self.ocr_fields_list.currentRowChanged.connect(self.on_ocr_field_selected)
-        layout.addWidget(QLabel("OCR Fields:"))
-        layout.addWidget(self.ocr_fields_list)
+        left_layout.addWidget(self.ocr_fields_list)
 
-        # OCR field configuration
-        ocr_config = QGroupBox("OCR Field Configuration")
-        ocr_layout = QGridLayout()
+        ocr_config = QGroupBox("Field Config")
+        ocr_config.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        ocr_layout = QFormLayout()
+        ocr_layout.setSpacing(6)
+        ocr_layout.setLabelAlignment(Qt.AlignRight)
 
-        ocr_layout.addWidget(QLabel("Field Name:"), 0, 0)
         self.ocr_field_name = QLineEdit()
-        ocr_layout.addWidget(self.ocr_field_name, 0, 1)
+        self.ocr_field_name.setPlaceholderText("Name")
+        self.ocr_field_name.setMinimumHeight(28)
+        ocr_layout.addRow("Name:", self.ocr_field_name)
 
-        ocr_layout.addWidget(QLabel("Regex Pattern:"), 1, 0)
         self.ocr_pattern = QLineEdit()
-        self.ocr_pattern.setPlaceholderText("e.g., [A-Z]\\d{6,}")
-        ocr_layout.addWidget(self.ocr_pattern, 1, 1)
+        self.ocr_pattern.setPlaceholderText("Regex pattern")
+        self.ocr_pattern.setMinimumHeight(28)
+        ocr_layout.addRow("Pattern:", self.ocr_pattern)
 
-        ocr_layout.addWidget(QLabel("Region (x, y, width, height):"), 2, 0)
         self.ocr_region = QLineEdit()
         self.ocr_region.setReadOnly(True)
-        ocr_layout.addWidget(self.ocr_region, 2, 1)
+        self.ocr_region.setPlaceholderText("x, y, w, h")
+        self.ocr_region.setMinimumHeight(28)
+        self.ocr_region.setStyleSheet("background-color: #f0f0f0;")
+        ocr_layout.addRow("Region:", self.ocr_region)
 
-        select_region_btn = QPushButton("Select Region on Image")
+        select_region_btn = QPushButton("Select Region")
+        select_region_btn.setToolTip("Start selecting a region on the image")
+        select_region_btn.setMinimumHeight(30)
         select_region_btn.clicked.connect(self.start_region_selection)
-        ocr_layout.addWidget(select_region_btn, 3, 0, 1, 2)
+        ocr_layout.addRow("", select_region_btn)
 
-        remove_ocr_btn = QPushButton("Remove OCR Field")
+        remove_ocr_btn = QPushButton("Remove")
+        remove_ocr_btn.setToolTip("Remove the selected OCR field")
+        remove_ocr_btn.setMinimumHeight(30)
         remove_ocr_btn.clicked.connect(self.remove_ocr_field)
-        ocr_layout.addWidget(remove_ocr_btn, 4, 0, 1, 2)
+        ocr_layout.addRow("", remove_ocr_btn)
 
         ocr_config.setLayout(ocr_layout)
-        layout.addWidget(ocr_config)
+        left_layout.addWidget(ocr_config)
 
-        # Image display
+        left_widget.setLayout(left_layout)
+        content_splitter.addWidget(left_widget)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
         self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("QScrollArea { border: 2px dashed #dee2e6; border-radius: 8px; background-color: #f8f9fa; }")
+        
         self.image_label = QLabel()
         self.image_label.setMouseTracking(True)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background-color: #f8f9fa; border-radius: 6px;")
         self.image_label.mousePressEvent = self.on_image_press
         self.image_label.mouseMoveEvent = self.on_image_move
         self.image_label.mouseReleaseEvent = self.on_image_release
         self.scroll.setWidget(self.image_label)
-        self.scroll.setWidgetResizable(True)
-        layout.addWidget(self.scroll)
+        right_layout.addWidget(self.scroll, 1)
 
-        # Status
-        self.status_label = QLabel("Load an image to start")
-        layout.addWidget(self.status_label)
+        right_widget.setLayout(right_layout)
+        content_splitter.addWidget(right_widget)
 
-        self.setLayout(layout)
+        content_splitter.setStretchFactor(0, 0)
+        content_splitter.setStretchFactor(1, 1)
+        content_splitter.setSizes([250, 700])
+
+        main_layout.addWidget(content_splitter, 1)
+
+        self.status_label = QLabel("Load an image to start configuring OCR fields")
+        self.status_label.setStyleSheet("color: #6c757d; font-style: italic; padding: 8px; background-color: #f8f9fa; border-radius: 6px;")
+        main_layout.addWidget(self.status_label)
+
+        self.setLayout(main_layout)
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Image", "", "Images (*.png *.jpg *.jpeg)"
         )
         if file_path:
-            self.image = QPixmap(file_path)
+            pixmap = QPixmap(file_path)
+            if pixmap.isNull():
+                QMessageBox.warning(self, "Error", "Failed to load image!")
+                return
+            self.image = pixmap
             self.update_display()
-            self.status_label.setText("Image loaded. Add OCR fields and select regions.")
+            self.status_label.setText(f"Image loaded: {self.image.width()} x {self.image.height()} pixels. Add OCR fields and select regions.")
 
     def add_ocr_field(self):
         if self.image is None:
@@ -1672,6 +1905,7 @@ class OCRConfigWidget(QWidget):
 
         painter.end()
         self.image_label.setPixmap(pixmap)
+        self.image_label.adjustSize()
 
     def save_ocr_fields(self):
         if not self.ocr_fields:
@@ -1733,30 +1967,466 @@ class OMRApplication(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("OMR Sheet Processing System")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setWindowTitle("OMR Sheet Processing System v2.0")
+        self.setGeometry(100, 100, 1400, 900)
+        
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
 
-        # Create tab widget
-        tabs = QTabWidget()
+        header_layout = QHBoxLayout()
+        
+        title_label = QLabel("OMR Sheet Processing")
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #0d6efd;")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        version_label = QLabel("v2.0")
+        version_label.setStyleSheet("font-size: 12px; color: #6c757d; padding: 5px 10px; background: #e7f1ff; border-radius: 4px;")
+        header_layout.addWidget(version_label)
+        
+        layout.addLayout(header_layout)
 
-        # Add tabs
+        separator = QLabel()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #dee2e6;")
+        layout.addWidget(separator)
+
         self.template_creator = TemplateCreator()
         self.sheet_processor = SheetProcessor()
         self.ocr_config = OCRConfigWidget()
+        
+        tabs = QTabWidget()
+        tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #dee2e6; border-radius: 8px; }")
+        
+        tabs.addTab(self.template_creator, "🎨 Template Creator")
+        tabs.addTab(self.sheet_processor, "⚙️ Sheet Processor")
+        tabs.addTab(self.ocr_config, "🔤 OCR Configuration")
+        
+        layout.addWidget(tabs)
 
-        tabs.addTab(self.template_creator, "Template Creator")
-        tabs.addTab(self.sheet_processor, "Sheet Processor")
-        tabs.addTab(self.ocr_config, "OCR Configuration")
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+        
+        self.create_menu_bar()
 
-        self.setCentralWidget(tabs)
+    def create_menu_bar(self):
+        menubar = self.menuBar()
+        menubar.setStyleSheet("QMenuBar { padding: 5px; }")
+
+        file_menu = menubar.addMenu('&File')
+
+        load_template_action = file_menu.addAction('📁 &Load Template...')
+        load_template_action.setShortcut('Ctrl+O')
+        load_template_action.setToolTip('Load an existing OMR template')
+        load_template_action.triggered.connect(lambda: self.template_creator.load_template())
+
+        save_template_action = file_menu.addAction('💾 &Save Template...')
+        save_template_action.setShortcut('Ctrl+S')
+        save_template_action.setToolTip('Save the current template')
+        save_template_action.triggered.connect(lambda: self.template_creator.save_template())
+
+        file_menu.addSeparator()
+
+        load_ocr_action = file_menu.addAction('🔤 Load &OCR Fields...')
+        load_ocr_action.setShortcut('Ctrl+Shift+O')
+        load_ocr_action.setToolTip('Load OCR field configuration')
+        load_ocr_action.triggered.connect(lambda: self.ocr_config.load_ocr_fields())
+
+        save_ocr_action = file_menu.addAction('🔤 Save &OCR Fields...')
+        save_ocr_action.setShortcut('Ctrl+Shift+S')
+        save_ocr_action.setToolTip('Save OCR field configuration')
+        save_ocr_action.triggered.connect(lambda: self.ocr_config.save_ocr_fields())
+
+        file_menu.addSeparator()
+
+        process_menu = file_menu.addMenu('⚡ &Process')
+        
+        process_pdf_action = process_menu.addAction('📄 &PDF File...')
+        process_pdf_action.setShortcut('Ctrl+P')
+        process_pdf_action.triggered.connect(lambda: self.sheet_processor.process_pdf())
+        
+        process_img_action = process_menu.addAction('🖼️ &Image Files...')
+        process_img_action.setShortcut('Ctrl+I')
+        process_img_action.triggered.connect(lambda: self.sheet_processor.process_images())
+        
+        export_action = file_menu.addAction('📊 &Export to Excel...')
+        export_action.setShortcut('Ctrl+E')
+        export_action.setToolTip('Export processing results to Excel')
+        export_action.triggered.connect(lambda: self.sheet_processor.export_excel())
+
+        file_menu.addSeparator()
+
+        exit_action = file_menu.addAction('🚪 E&xit')
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.setToolTip('Close the application')
+        exit_action.triggered.connect(self.close)
+
+        edit_menu = menubar.addMenu('&Edit')
+
+        clear_template_action = edit_menu.addAction('🗑️ Clear Template')
+        clear_template_action.setShortcut('Ctrl+Del')
+        clear_template_action.triggered.connect(lambda: self.template_creator.template_data.clear())
+
+        view_menu = menubar.addMenu('&View')
+
+        debug_action = view_menu.addAction('🐛 Debug Mode')
+        debug_action.setCheckable(True)
+        debug_action.setShortcut('F12')
+        debug_action.setChecked(False)
+        debug_action.triggered.connect(lambda: self.toggle_debug(Qt.Checked if debug_action.isChecked() else Qt.Unchecked))
+
+        ocr_action = view_menu.addAction('🔤 OCR Fields')
+        ocr_action.setCheckable(True)
+        ocr_action.setChecked(True)
+
+        view_menu.addSeparator()
+
+        fullscreen_action = view_menu.addAction('⛶ Fullscreen')
+        fullscreen_action.setShortcut('F11')
+        fullscreen_action.triggered.connect(lambda: self.setWindowState(Qt.WindowFullScreen) if self.windowState() != Qt.WindowFullScreen else self.setWindowState(Qt.WindowNoState))
+
+        help_menu = menubar.addMenu('&Help')
+
+        docs_action = help_menu.addAction('📖 &Documentation')
+        docs_action.setShortcut('F1')
+        docs_action.triggered.connect(lambda: QMessageBox.information(self, "Documentation", 
+            "OMR Sheet Processing System\n\n"
+            "Template Creator: Create OMR templates by defining bubble fields on reference images.\n\n"
+            "Sheet Processor: Process scanned OMR sheets using templates.\n\n"
+            "OCR Configuration: Define regions for text extraction using OCR."))
+
+        shortcuts_action = help_menu.addAction('⌨️ &Keyboard Shortcuts')
+        shortcuts_action.triggered.connect(lambda: QMessageBox.information(self, "Keyboard Shortcuts",
+            "Ctrl+O   - Load Template\n"
+            "Ctrl+S   - Save Template\n"
+            "Ctrl+P   - Process PDF\n"
+            "Ctrl+I   - Process Images\n"
+            "Ctrl+E   - Export to Excel\n"
+            "Ctrl+Q   - Exit\n"
+            "F11      - Toggle Fullscreen\n"
+            "F12      - Toggle Debug Mode"))
+
+        help_menu.addSeparator()
+
+        about_action = help_menu.addAction('ℹ️ &About')
+        about_action.triggered.connect(self.show_about)
+
+    def show_about(self):
+        about_text = """
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 10px;">
+            <div style="text-align: center; margin-bottom: 15px;">
+                <h2 style="color: #0d6efd; margin: 5px 0;">OMR Sheet Processing System</h2>
+                <p style="color: #666; font-size: 13px; margin: 0;">Professional OMR Analysis Software</p>
+            </div>
+            <hr style="border: none; border-top: 1px solid #dee2e6; margin: 10px 0;"/>
+            <p style="text-align: center;"><b>Version 2.0</b></p>
+            <p style="color: #555; text-align: center; line-height: 1.6; font-size: 12px;">
+                A comprehensive solution for creating OMR templates, processing scanned sheets,
+                and extracting data with precision and ease.
+            </p>
+            <h3 style="color: #0d6efd; font-size: 13px; margin-top: 15px;">Key Features:</h3>
+            <ul style="color: #555; line-height: 1.8; font-size: 12px;">
+                <li>Interactive template creation with visual bubble placement</li>
+                <li>Batch processing of PDF and image files</li>
+                <li>Advanced OCR field extraction with regex patterns</li>
+                <li>Real-time barcode detection</li>
+                <li>Excel and CSV export with formatting</li>
+                <li>Debug mode for troubleshooting processing issues</li>
+                <li>Multi-page PDF support with progress tracking</li>
+            </ul>
+            <hr style="border: none; border-top: 1px solid #dee2e6; margin: 10px 0;"/>
+            <p style="text-align: center; color: #888; font-size: 11px;">
+                Built with PyQt5, OpenCV, Tesseract OCR, and pdf2image<br/>
+                © 2024 OMR Processing System
+            </p>
+        </div>
+        """
+        QMessageBox.about(self, "About OMR Sheet Processing System", about_text)
 
 
-def main():
-    app = QApplication(sys.argv)
-    window = OMRApplication()
-    window.show()
-    sys.exit(app.exec_())
+APPLICATION_STYLESHEET = """
+    QMainWindow {
+        background-color: #f8f9fa;
+    }
+
+    QWidget {
+        background-color: #f8f9fa;
+        color: #212529;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 13px;
+    }
+
+    QTabWidget::pane {
+        border: 1px solid #dee2e6;
+        background-color: #ffffff;
+        border-radius: 8px;
+        margin-top: 5px;
+    }
+
+    QTabBar::tab {
+        background-color: #e9ecef;
+        border: none;
+        padding: 10px 20px;
+        margin-right: 3px;
+        border-radius: 6px 6px 0 0;
+        color: #495057;
+        font-weight: 500;
+    }
+
+    QTabBar::tab:selected {
+        background-color: #ffffff;
+        color: #0d6efd;
+        border-bottom: 2px solid #0d6efd;
+    }
+
+    QTabBar::tab:hover:!selected {
+        background-color: #dee2e6;
+    }
+
+    QPushButton {
+        background-color: #0d6efd;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 13px;
+        min-width: 80px;
+    }
+
+    QPushButton:hover {
+        background-color: #0b5ed7;
+    }
+
+    QPushButton:pressed {
+        background-color: #0a58ca;
+    }
+
+    QPushButton:disabled {
+        background-color: #ced4da;
+        color: #6c757d;
+    }
+
+    QGroupBox {
+        font-weight: 600;
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        margin-top: 15px;
+        padding-top: 15px;
+        background-color: #ffffff;
+    }
+
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 15px;
+        padding: 0 10px 0 10px;
+        color: #0d6efd;
+        font-size: 13px;
+    }
+
+    QLineEdit, QSpinBox, QComboBox, QTextEdit {
+        border: 2px solid #dee2e6;
+        border-radius: 6px;
+        padding: 8px 12px;
+        background-color: #ffffff;
+        color: #212529;
+        selection-background-color: #0d6efd;
+        selection-color: #ffffff;
+    }
+
+    QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
+        border-color: #0d6efd;
+    }
+
+    QLabel {
+        color: #495057;
+    }
+
+    QTableWidget {
+        gridline-color: #dee2e6;
+        selection-background-color: #e7f1ff;
+        selection-color: #212529;
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        background-color: #ffffff;
+    }
+
+    QTableWidget::item {
+        padding: 8px;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    QTableWidget::item:selected {
+        background-color: #e7f1ff;
+    }
+
+    QHeaderView::section {
+        background-color: #f8f9fa;
+        color: #495057;
+        padding: 10px;
+        border: none;
+        font-weight: 600;
+    }
+
+    QProgressBar {
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        text-align: center;
+        background-color: #ffffff;
+        height: 24px;
+    }
+
+    QProgressBar::chunk {
+        background-color: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #0d6efd, stop: 1 #6ea8fe);
+        border-radius: 6px;
+    }
+
+    QListWidget {
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        background-color: #ffffff;
+        padding: 5px;
+    }
+
+    QListWidget::item {
+        padding: 8px 12px;
+        border-radius: 4px;
+        margin: 2px;
+    }
+
+    QListWidget::item:selected {
+        background-color: #e7f1ff;
+        color: #212529;
+    }
+
+    QListWidget::item:hover {
+        background-color: #f8f9fa;
+    }
+
+    QScrollArea {
+        border: none;
+        background-color: transparent;
+    }
+
+    QScrollBar:vertical {
+        border: none;
+        background-color: #f1f3f5;
+        width: 12px;
+        border-radius: 6px;
+    }
+
+    QScrollBar::handle:vertical {
+        background-color: #ced4da;
+        border-radius: 5px;
+        min-height: 30px;
+        margin: 2px;
+    }
+
+    QScrollBar::handle:vertical:hover {
+        background-color: #adb5bd;
+    }
+
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        border: none;
+        height: 0px;
+    }
+
+    QMenuBar {
+        background-color: #ffffff;
+        color: #212529;
+        border-bottom: 1px solid #dee2e6;
+        padding: 5px;
+    }
+
+    QMenuBar::item:selected {
+        background-color: #e7f1ff;
+        border-radius: 4px;
+    }
+
+    QMenu {
+        background-color: #ffffff;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 5px;
+    }
+
+    QMenu::item {
+        padding: 8px 20px;
+        border-radius: 4px;
+    }
+
+    QMenu::item:selected {
+        background-color: #e7f1ff;
+    }
+
+    QMenu::separator {
+        height: 1px;
+        background-color: #dee2e6;
+        margin: 5px 10px;
+    }
+
+    QCheckBox {
+        spacing: 8px;
+        color: #212529;
+    }
+
+    QCheckBox::indicator {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #ced4da;
+        border-radius: 4px;
+        background-color: #ffffff;
+    }
+
+    QCheckBox::indicator:checked {
+        background-color: #0d6efd;
+        border-color: #0d6efd;
+    }
+
+    QCheckBox::indicator:checked::after {
+        content: "✓";
+        color: white;
+        font-weight: bold;
+        font-size: 14px;
+        margin-left: 2px;
+    }
+
+    QToolTip {
+        background-color: #ffffff;
+        color: #212529;
+        border: 1px solid #dee2e6;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+
+    QSplitter::handle {
+        background-color: #dee2e6;
+    }
+
+    QStatusBar {
+        background-color: #ffffff;
+        color: #6c757d;
+        border-top: 1px solid #dee2e6;
+        padding: 5px 10px;
+    }
+"""
 
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(APPLICATION_STYLESHEET)
+    
+    app.setApplicationName("OMR Sheet Processing System")
+    app.setApplicationVersion("2.0")
+    app.setOrganizationName("OMR Processing")
+    
+    window = OMRApplication()
+    window.show()
+    sys.exit(app.exec_())
