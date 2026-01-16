@@ -16,6 +16,11 @@ A comprehensive Optical Mark Recognition (OMR) and Optical Character Recognition
     - Configurable correct answers (e.g., A,B,C,D,A,B,C,D)
     - Automatic scoring and correctness check
 - **Sheet Processing**: Process multiple sheets from images or PDF files
+- **Multiprocessing Support**: 🚀 NEW! Parallel processing for faster batch operations
+  - Toggle multiprocessing on/off via UI checkbox
+  - Automatically uses all available CPU cores
+  - Significantly faster for processing multiple images or PDF pages
+  - Smart fallback to sequential processing for single files
 - **Bubble Detection**: Advanced multi-method bubble detection with confidence scoring
 - **Barcode Recognition**: Automatic barcode detection and decoding
 - **OCR Integration**: Extract text with custom regex patterns
@@ -53,10 +58,24 @@ Tesseract OCR must be installed separately:
 - **Mac**: `brew install tesseract`
 - **Linux**: `sudo apt-get install tesseract-ocr`
 
-Update the Tesseract path in `main.py` (line 16):
+Update the Tesseract path in `main.py` (line 19-20):
 ```python
 pytesseract.pytesseract.tesseract_cmd = r"C:\path\to\tesseract.exe"
 ```
+
+### Poppler (Required for PDF Processing)
+
+Poppler is required for PDF processing:
+
+- **Windows**: 
+  1. Download from [poppler-windows releases](https://github.com/oschwartz10612/poppler-windows/releases/)
+  2. Extract to `C:\poppler` (or another location)
+  3. The application will auto-detect it in common locations
+  4. Alternatively, add poppler's `bin` folder to your system PATH
+- **Mac**: `brew install poppler`
+- **Linux**: `sudo apt-get install poppler-utils`
+
+**Note**: The application automatically searches for poppler in common Windows locations and provides helpful error messages if not found.
 
 ## Usage
 
@@ -106,13 +125,21 @@ python main.py
 1. Open the "Sheet Processor" tab
 2. Load your template
 3. Load OCR fields (optional - can use saved file)
-4. Toggle "Enable OCR" checkbox to enable/disable OCR processing
+4. Configure processing options:
+   - **Enable OCR**: Toggle OCR processing on/off
+   - **🚀 Use Multiprocessing**: Enable parallel processing for faster batch operations (recommended for multiple files)
+   - **Processing Mode**: Choose "High Quality" or "Fast"
 5. Choose processing method:
    - "Process PDF": Process a multi-page PDF file
    - "Process Images": Select multiple image files
 6. Enable "Debug Mode" for visual output (creates debug images in a folder)
 7. View results in the table
 8. Export to Excel for further analysis
+
+**Performance Tips**:
+- Enable multiprocessing when processing multiple files for significant speed improvements
+- Disable multiprocessing for single files or when debugging
+- Sequential mode shows detailed progress for each file
 
 ## Project Structure
 
@@ -146,11 +173,12 @@ OMR/
 
 - **SheetProcessor**: GUI for processing sheets
   - Template loading
-  - Batch processing
+  - Batch processing with multiprocessing support
   - OCR field management
   - Results display
   - Debug mode
   - Excel export
+  - Performance options (multiprocessing toggle, processing mode)
 
 - **OCRConfigWidget**: GUI for configuring OCR fields
   - Add/remove OCR fields

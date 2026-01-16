@@ -20,7 +20,7 @@ pytesseract.pytesseract.tesseract_cmd = (
     r"C:\Users\vetri\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 )
 from pdf2image import convert_from_path
-from PyQt5.QtCore import QPoint, QRect, Qt
+from PyQt5.QtCore import QPoint, QRect, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QBrush, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -54,8 +54,302 @@ from PyQt5.QtWidgets import (
 from pyzbar.pyzbar import decode
 
 # ============================================================================
+# PROCESSING WORKER THREAD (Non-blocking background processing)
+# ============================================================================
+
+
+class ProcessingWorker(QThread):
+    """
+    Background worker thread for processing OMR sheets without blocking the UI.
+    Supports both PDF and image processing with multiprocessing.
+    """
+    
+    # Signals for communication with main thread
+    progress_updated = pyqtSignal(int, int, str)  # current, total, status_message
+    result_ready = pyqtSignal(dict)  # individual result
+    processing_complete = pyqtSignal(list)  # all results
+    error_occurred = pyqtSignal(str)  # error message
+    
+    def __init__(self, mode, file_paths, template_data, debug_mode, ocr_enabled, 
+                 processing_mode, use_multiprocessing, poppler_path=None):
+        super().__init__()
+        self.mode = mode  # "pdf" or "images"
+        self.file_paths = file_paths if isinstance(file_paths, list) else [file_paths]
+        self.template_data = template_data
+        self.debug_mode = debug_mode
+        self.ocr_enabled = ocr_enabled
+        self.processing_mode = processing_mode
+        self.use_multiprocessing = use_multiprocessing
+        self.poppler_path = poppler_path
+        self.is_cancelled = False
+        self.results = []
+    
+    def cancel(self):
+        """Request cancellation of processing"""
+        self.is_cancelled = True
+    
+    def run(self):
+        """Main processing loop - runs in background thread"""
+        try:
+            if self.mode == "pdf":
+                self._process_pdf()
+            elif self.mode == "images":
+                self._process_images()
+            
+            if not self.is_cancelled:
+                self.processing_complete.emit(self.results)
+        except Exception as e:
+            self.error_occurred.emit(f"{str(e)}\n\n{traceback.format_exc()}")
+    
+    def _process_pdf(self):
+        """Process PDF file"""
+        file_path = self.file_paths[0]
+        
+        # Convert PDF to images
+        self.progress_updated.emit(0, 100, "Converting PDF to images...")
+        
+        try:
+            images = convert_from_path(
+                file_path,
+                dpi=300,
+                thread_count=os.cpu_count() or 4,
+                poppler_path=self.poppler_path
+            )
+        except Exception as e:
+            self.error_occurred.emit(
+                f"Failed to process PDF. Poppler is required.\n\n"
+                f"Download from: https://github.com/oschwartz10612/poppler-windows/releases/\n"
+                f"Extract to C:\\poppler\n\n"
+                f"Error: {str(e)}"
+            )
+            return
+        
+        total_pages = len(images)
+        
+        if self.use_multiprocessing and total_pages > 1:
+            self._process_pdf_parallel(file_path, total_pages)
+        else:
+            self._process_pdf_sequential(images, total_pages)
+    
+    def _process_pdf_parallel(self, file_path, total_pages):
+        """Process PDF pages in parallel"""
+        self.progress_updated.emit(0, total_pages, "Processing pages in parallel...")
+        
+        args_list = [
+            (
+                i,
+                file_path,
+                self.template_data,
+                self.debug_mode,
+                self.ocr_enabled,
+                self.processing_mode,
+                300  # dpi
+            )
+            for i in range(total_pages)
+        ]
+        
+        max_workers = min(os.cpu_count() or 2, total_pages)
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for i, result in enumerate(executor.map(_process_pdf_page_worker, args_list)):
+                if self.is_cancelled:
+                    break
+                
+                self.results.append(result)
+                self.result_ready.emit(result)
+                self.progress_updated.emit(
+                    i + 1, 
+                    total_pages, 
+                    f"Processing page {i + 1} of {total_pages}... (Parallel)"
+                )
+    
+    def _process_pdf_sequential(self, images, total_pages):
+        """Process PDF pages sequentially"""
+        processor = OMRProcessor(
+            self.template_data,
+            debug_mode=self.debug_mode,
+            ocr_enabled=self.ocr_enabled,
+            processing_mode=self.processing_mode
+        )
+        
+        for i, img in enumerate(images):
+            if self.is_cancelled:
+                break
+            
+            # Convert PIL image to OpenCV format
+            img_array = np.array(img)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            
+            sheet_result = processor.process_sheet(img_bgr)
+            sheet_result["sheet_number"] = i + 1
+            
+            self.results.append(sheet_result)
+            self.result_ready.emit(sheet_result)
+            self.progress_updated.emit(
+                i + 1, 
+                total_pages, 
+                f"Processing page {i + 1} of {total_pages}..."
+            )
+    
+    def _process_images(self):
+        """Process image files"""
+        total_files = len(self.file_paths)
+        
+        if self.use_multiprocessing and total_files > 1:
+            self._process_images_parallel(total_files)
+        else:
+            self._process_images_sequential(total_files)
+    
+    def _process_images_parallel(self, total_files):
+        """Process images in parallel"""
+        self.progress_updated.emit(0, total_files, "Processing images in parallel...")
+        
+        args_list = [
+            (
+                path,
+                self.template_data,
+                self.debug_mode,
+                self.ocr_enabled,
+                self.processing_mode,
+            )
+            for path in self.file_paths
+        ]
+        
+        max_workers = min(os.cpu_count() or 2, total_files)
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for i, result in enumerate(executor.map(_process_image_worker, args_list)):
+                if self.is_cancelled:
+                    break
+                
+                result["sheet_number"] = i + 1
+                self.results.append(result)
+                self.result_ready.emit(result)
+                self.progress_updated.emit(
+                    i + 1, 
+                    total_files, 
+                    f"Processing image {i + 1} of {total_files}... (Parallel)"
+                )
+    
+    def _process_images_sequential(self, total_files):
+        """Process images sequentially"""
+        processor = OMRProcessor(
+            self.template_data,
+            debug_mode=self.debug_mode,
+            ocr_enabled=self.ocr_enabled,
+            processing_mode=self.processing_mode
+        )
+        
+        for i, path in enumerate(self.file_paths):
+            if self.is_cancelled:
+                break
+            
+            result = processor.process_sheet(path, save_debug=self.debug_mode)
+            result["sheet_number"] = i + 1
+            result["file_name"] = Path(path).name
+            
+            self.results.append(result)
+            self.result_ready.emit(result)
+            self.progress_updated.emit(
+                i + 1, 
+                total_files, 
+                f"Processing image {i + 1} of {total_files}..."
+            )
+
+
+# ============================================================================
 # CORE OMR PROCESSING LOGIC (Separate from GUI)
 # ============================================================================
+
+
+def _process_image_worker(args):
+    """
+    Worker function for processing a single image in parallel.
+    Must be at top level for pickling by ProcessPoolExecutor.
+    
+    Args:
+        args: Tuple of (image_path, template_data, debug_mode, ocr_enabled, processing_mode)
+    
+    Returns:
+        dict: Processing result with extracted data
+    """
+    image_path, template_data, debug_mode, ocr_enabled, processing_mode = args
+    
+    try:
+        # Create processor instance for this worker
+        processor = OMRProcessor(
+            template_data,
+            debug_mode=debug_mode,
+            ocr_enabled=ocr_enabled,
+            processing_mode=processing_mode
+        )
+        
+        # Process the image
+        result = processor.process_sheet(image_path, save_debug=debug_mode)
+        result["file_name"] = Path(image_path).name
+        
+        return result
+    except Exception as e:
+        # Return error result
+        return {
+            "file_name": Path(image_path).name,
+            "error": str(e),
+            "status": "failed"
+        }
+
+
+def _process_pdf_page_worker(args):
+    """
+    Worker function for processing a single PDF page in parallel.
+    Must be at top level for pickling by ProcessPoolExecutor.
+    
+    Args:
+        args: Tuple of (page_index, pdf_path, template_data, debug_mode, ocr_enabled, processing_mode, dpi)
+    
+    Returns:
+        dict: Processing result with extracted data
+    """
+    page_index, pdf_path, template_data, debug_mode, ocr_enabled, processing_mode, dpi = args
+    
+    try:
+        # Create processor instance for this worker
+        processor = OMRProcessor(
+            template_data,
+            debug_mode=debug_mode,
+            ocr_enabled=ocr_enabled,
+            processing_mode=processing_mode
+        )
+        
+        # Convert single page to image
+        images = convert_from_path(
+            pdf_path,
+            dpi=dpi,
+            first_page=page_index + 1,
+            last_page=page_index + 1,
+            thread_count=1
+        )
+        
+        if images:
+            # Convert PIL image to OpenCV format
+            img_array = np.array(images[0])
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            
+            # Process the sheet
+            result = processor.process_sheet(img_bgr, save_debug=debug_mode)
+            result["sheet_number"] = page_index + 1
+            
+            return result
+        else:
+            return {
+                "sheet_number": page_index + 1,
+                "error": "Failed to convert PDF page to image",
+                "status": "failed"
+            }
+    except Exception as e:
+        # Return error result
+        return {
+            "sheet_number": page_index + 1,
+            "error": str(e),
+            "status": "failed"
+        }
 
 
 class OMRProcessor:
@@ -1664,6 +1958,9 @@ class SheetProcessor(QWidget):
         self.debug_mode = False
         self.ocr_enabled = True
         self.processing_mode = "quality"
+        self.use_multiprocessing = True  # Enable multiprocessing by default
+        self.processing_worker = None  # Background processing thread
+        self.poppler_path = None  # Will be detected automatically
         self.init_ui()
 
     def init_ui(self):
@@ -1735,6 +2032,27 @@ class SheetProcessor(QWidget):
         controls.addWidget(export_btn, row, 1)
         row += 1
 
+        clear_results_btn = QPushButton("🗑️ Clear Results")
+        clear_results_btn.setToolTip("Clear all results from the table")
+        clear_results_btn.setMinimumHeight(40)
+        clear_results_btn.clicked.connect(self.clear_results)
+        controls.addWidget(clear_results_btn, row, 0, 1, 2)
+        row += 1
+
+        # Cancel button (hidden by default)
+        self.cancel_btn = QPushButton("❌ Cancel Processing")
+        self.cancel_btn.setToolTip("Stop the current processing operation")
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self.cancel_processing)
+        self.cancel_btn.setStyleSheet(
+            "QPushButton { background-color: #dc3545; }"
+            "QPushButton:hover { background-color: #c82333; }"
+            "QPushButton:pressed { background-color: #bd2130; }"
+        )
+        controls.addWidget(self.cancel_btn, row, 0, 1, 2)
+        row += 1
+
         options_frame = QFrame()
         options_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 10px;")
         options_layout = QHBoxLayout()
@@ -1751,6 +2069,14 @@ class SheetProcessor(QWidget):
         self.ocr_checkbox.setToolTip("Enable OCR for extracting text from specified regions")
         self.ocr_checkbox.stateChanged.connect(self.toggle_ocr)
         options_layout.addWidget(self.ocr_checkbox)
+
+        self.multiprocessing_checkbox = QCheckBox("🚀 Use Multiprocessing")
+        self.multiprocessing_checkbox.setChecked(True)
+        self.multiprocessing_checkbox.setToolTip(
+            "Enable parallel processing for faster batch operations (recommended for multiple files)"
+        )
+        self.multiprocessing_checkbox.stateChanged.connect(self.toggle_multiprocessing)
+        options_layout.addWidget(self.multiprocessing_checkbox)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["High Quality", "Fast"])
@@ -1830,6 +2156,9 @@ class SheetProcessor(QWidget):
         if self.processor:
             self.processor.ocr_enabled = self.ocr_enabled
 
+    def toggle_multiprocessing(self, state):
+        self.use_multiprocessing = state == Qt.Checked
+
     def change_processing_mode(self, index):
         if index == 1:
             self.processing_mode = "fast"
@@ -1891,47 +2220,50 @@ class SheetProcessor(QWidget):
             self, "Select PDF", "", "PDF Files (*.pdf)"
         )
         if file_path:
-            try:
-                self.status_label.setText("Processing PDF...")
-                self.progress_bar.setVisible(True)
-                self.progress_bar.setValue(0)
-                QApplication.processEvents()
+            # Detect poppler path
+            self.poppler_path = self._detect_poppler_path()
+            
+            # Create and configure worker thread
+            self.processing_worker = ProcessingWorker(
+                mode="pdf",
+                file_paths=file_path,
+                template_data=self.template_data,
+                debug_mode=self.debug_mode,
+                ocr_enabled=self.ocr_enabled,
+                processing_mode=self.processing_mode,
+                use_multiprocessing=self.use_multiprocessing,
+                poppler_path=self.poppler_path
+            )
+            
+            # Connect signals
+            self.processing_worker.progress_updated.connect(self.on_progress_updated)
+            self.processing_worker.result_ready.connect(self.on_result_ready)
+            self.processing_worker.processing_complete.connect(self.on_processing_complete)
+            self.processing_worker.error_occurred.connect(self.on_error_occurred)
+            
+            # Prepare UI (don't clear existing results - we'll append new ones)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.cancel_btn.setVisible(True)
+            self.status_label.setText("Starting PDF processing...")
 
-                # Get number of pages first
-                images = convert_from_path(
-                    file_path,
-                    dpi=300,
-                    thread_count=os.cpu_count() or 4,
-                )
-                total_pages = len(images)
-
-                self.progress_bar.setMaximum(total_pages)
-                self.results = []
-
-                for i, img in enumerate(images):
-                    # Convert PIL image to OpenCV format
-                    img_array = np.array(img)
-                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-
-                    sheet_result = self.processor.process_sheet(img_bgr)
-                    sheet_result["sheet_number"] = i + 1
-                    self.results.append(sheet_result)
-
-                    self.progress_bar.setValue(i + 1)
-                    self.status_label.setText(f"Processing page {i + 1} of {total_pages}...")
-                    QApplication.processEvents()
-
-                self.display_results()
-                self.progress_bar.setVisible(False)
-                self.status_label.setText(f"Successfully processed {len(self.results)} sheets from PDF")
-            except Exception as e:
-                self.progress_bar.setVisible(False)
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"Processing failed: {str(e)}\n\n{traceback.format_exc()}",
-                )
-                self.status_label.setText("Processing failed")
+            
+            # Start processing in background thread
+            self.processing_worker.start()
+    
+    def _detect_poppler_path(self):
+        """Detect poppler installation path"""
+        possible_paths = [
+            r"C:\Program Files\poppler\Library\bin",
+            r"C:\Program Files (x86)\poppler\Library\bin",
+            r"C:\poppler\Library\bin",
+            os.path.join(os.path.dirname(__file__), "poppler", "Library", "bin"),
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path) and os.path.exists(os.path.join(path, "pdftoppm.exe")):
+                return path
+        return None
 
     def process_images(self):
         if self.processor is None:
@@ -1942,67 +2274,98 @@ class SheetProcessor(QWidget):
             self, "Select Images", "", "Images (*.png *.jpg *.jpeg)"
         )
         if file_paths:
-            try:
-                self.status_label.setText("Processing images...")
-                self.progress_bar.setVisible(True)
-                self.progress_bar.setMaximum(len(file_paths))
-                self.progress_bar.setValue(0)
-                QApplication.processEvents()
+            # Create and configure worker thread
+            self.processing_worker = ProcessingWorker(
+                mode="images",
+                file_paths=file_paths,
+                template_data=self.template_data,
+                debug_mode=self.debug_mode,
+                ocr_enabled=self.ocr_enabled,
+                processing_mode=self.processing_mode,
+                use_multiprocessing=self.use_multiprocessing
+            )
+            
+            # Connect signals
+            self.processing_worker.progress_updated.connect(self.on_progress_updated)
+            self.processing_worker.result_ready.connect(self.on_result_ready)
+            self.processing_worker.processing_complete.connect(self.on_processing_complete)
+            self.processing_worker.error_occurred.connect(self.on_error_occurred)
+            
+            # Prepare UI (don't clear existing results - we'll append new ones)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.cancel_btn.setVisible(True)
+            self.status_label.setText("Starting image processing...")
+            
+            # Start processing in background thread
+            self.processing_worker.start()
+    
+    # Signal/Slot handlers for background processing
+    def on_progress_updated(self, current, total, message):
+        """Update progress bar and status message"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.status_label.setText(message)
+    
+    def on_result_ready(self, result):
+        """Handle individual result (real-time display)"""
+        self.results.append(result)
+        self.display_results()
+    
+    def on_processing_complete(self, results):
+        """Handle completion of all processing"""
+        # Results are already added incrementally in on_result_ready
+        self.display_results()
+        self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        
+        mode_text = "parallel" if self.use_multiprocessing and len(results) > 1 else "sequential"
+        msg = f"Successfully processed {len(results)} items ({mode_text})"
+        if self.debug_mode:
+            msg += "\nDebug images saved to 'debug_output' folder"
+        self.status_label.setText(msg)
+        
+        # Clean up worker
+        if self.processing_worker:
+            self.processing_worker.deleteLater()
+            self.processing_worker = None
+    
+    def on_error_occurred(self, error_message):
+        """Handle processing errors"""
+        self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        QMessageBox.critical(self, "Processing Error", error_message)
+        self.status_label.setText("Processing failed")
+        
+        # Clean up worker
+        if self.processing_worker:
+            self.processing_worker.deleteLater()
+            self.processing_worker = None
+    
+    def cancel_processing(self):
+        """Cancel the current processing operation"""
+        if self.processing_worker and self.processing_worker.isRunning():
+            self.processing_worker.cancel()
+            self.status_label.setText("Cancelling processing...")
+            self.cancel_btn.setEnabled(False)  # Prevent multiple clicks
 
-                self.results = []
-
-                if len(file_paths) > 1:
-                    args_list = [
-                        (
-                            path,
-                            self.template_data,
-                            self.debug_mode,
-                            self.ocr_enabled,
-                            self.processing_mode,
-                        )
-                        for path in file_paths
-                    ]
-
-                    max_workers = os.cpu_count() or 2
-                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                        for i, result in enumerate(executor.map(_process_image_worker, args_list)):
-                            result["sheet_number"] = i + 1
-                            self.results.append(result)
-
-                            self.progress_bar.setValue(i + 1)
-                            self.status_label.setText(
-                                f"Processing image {i + 1} of {len(file_paths)}..."
-                            )
-                            QApplication.processEvents()
-                else:
-                    for i, path in enumerate(file_paths):
-                        result = self.processor.process_sheet(
-                            path, save_debug=self.debug_mode
-                        )
-                        result["sheet_number"] = i + 1
-                        result["file_name"] = Path(path).name
-                        self.results.append(result)
-
-                        self.progress_bar.setValue(i + 1)
-                        self.status_label.setText(
-                            f"Processing image {i + 1} of {len(file_paths)}..."
-                        )
-                        QApplication.processEvents()
-
-                self.display_results()
-                self.progress_bar.setVisible(False)
-                msg = f"Successfully processed {len(self.results)} images"
-                if self.debug_mode:
-                    msg += "\nDebug images saved to 'debug_output' folder"
-                self.status_label.setText(msg)
-            except Exception as e:
-                self.progress_bar.setVisible(False)
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"Processing failed: {str(e)}\n\n{traceback.format_exc()}",
-                )
-                self.status_label.setText("Processing failed")
+    def clear_results(self):
+        """Clear all current results after confirmation"""
+        if not self.results:
+            return
+            
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Clear", 
+            f"Are you sure you want to clear all {len(self.results)} results?",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.results = []
+            self.table.setRowCount(0)
+            self.status_label.setText("Results cleared.")
 
     def display_results(self):
         if not self.results:
